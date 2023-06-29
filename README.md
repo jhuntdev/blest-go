@@ -37,81 +37,104 @@ package main
 
 import (
   "blest"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
+	"github.com/gin-gonic/gin"
+	"net/http"
 )
 
 func main() {
+	// Create a new Gin router
+	router := gin.Default()
 
-  // Create some middleware (optional)
-  authMiddleware := func(params interface{}, context *map[string]interface{}) (interface{}, error) {
-    name, ok := params.(map[string]interface{})["name"].(string)
-    if !ok {
-      name = "Tarzan"
-    }
-    (*context)["user"] = map[string]interface{}{
-      "name": name,
-    }
-    return nil, nil
-  }
+	// Enable CORS middleware
+	router.Use(corsMiddleware())
 
-  // Create a route controller
-  greetController := func(params interface{}, context *map[string]interface{}) (interface{}, error) {
-    user, ok := (*context)["user"].(map[string]interface{})
-    if !ok {
-      return nil, errors.New("user not found or has an invalid type")
-    }
-    name, ok := user["name"].(string)
-    if !ok {
-      return nil, errors.New("name not found or has an invalid type")
-    }
-    greeting := fmt.Sprintf("Hi, %v!", name)
-    return map[string]interface{}{
-      "greeting": greeting,
-    }, nil
-  }
+	// Define the route handlers
+	router.OPTIONS("/", handleOptionsRequest)
+	router.POST("/", handlePostRequest)
 
-  // Set up a router
-  router := map[string]interface{}{
-		"greet": []func(interface{}, *map[string]interface{}) (interface{}, error){
-			authMiddleware,
-      greetController
-	  }
-  }
+	// Start the server
+	router.Run(":8080")
+}
 
-  // Create a request handler
-	requestHandler := blest.createRequestHandler(router, nil)
-
-  // Use the request handler
-	response := requestHandler(requests, nil)
-	result, ok1 := response[0].([][4]interface{})
-	reqErr, ok2 := response[1].(map[string]interface{})
-	if ok2 && reqErr != nil {
-		log.Println(reqErr["message"])
-		statusCode, ok3 := reqErr["code"].(int)
-		if !ok3 {
-			statusCode = 500
-		}
-		log.Println(statusCode)
-		log.Println(reqErr["message"])
-		return
-	} else if !ok1 {
-		log.Println("Request handler returned an improperly formatted response")
-		return
-	} else {
-		json, err := json.Marshal(result)
-		if err != nil {
-			fmt.Println("Error:", err)
-		} else {
-			fmt.Println("Result:", string(json))
-		}
+// CORS middleware to enable CORS headers
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type")
+		c.Next()
 	}
+}
 
-	server := CreateHTTPServer(handler, nil)
+// Handler for OPTIONS requests on "/"
+func handleOptionsRequest(c *gin.Context) {
+	c.AbortWithStatus(http.StatusNoContent)
+}
 
-	log.Fatal(server.ListenAndServe())
+// Create some middleware (optional)
+authMiddleware := func(params interface{}, context *map[string]interface{}) (interface{}, error) {
+  name, ok := params.(map[string]interface{})["name"].(string)
+  if !ok {
+    name = "Tarzan"
+  }
+  (*context)["user"] = map[string]interface{}{
+    "name": name,
+  }
+  return nil, nil
+}
+
+// Create a route controller
+greetController := func(params interface{}, context *map[string]interface{}) (interface{}, error) {
+  user, ok := (*context)["user"].(map[string]interface{})
+  if !ok {
+    return nil, errors.New("user not found or has an invalid type")
+  }
+  name, ok := user["name"].(string)
+  if !ok {
+    return nil, errors.New("name not found or has an invalid type")
+  }
+  greeting := fmt.Sprintf("Hi, %v!", name)
+  return map[string]interface{}{
+    "greeting": greeting,
+  }, nil
+}
+
+// Set up a router
+router := map[string]interface{}{
+  "greet": []func(interface{}, *map[string]interface{}) (interface{}, error){
+    authMiddleware,
+    greetController
+  }
+}
+
+// Create a request handler
+requestHandler := blest.CreateRequestHandler(router, nil)
+
+func handlePostRequest(c *gin.Context) {
+  // Use the request handler
+  response := requestHandler(requests, nil)
+  result, ok1 := response[0].([][4]interface{})
+  reqErr, ok2 := response[1].(map[string]interface{})
+  if ok2 && reqErr != nil {
+    log.Println(reqErr["message"])
+    statusCode, ok3 := reqErr["code"].(int)
+    if !ok3 {
+      statusCode = 500
+    }
+    c.String(statusCode, reqErr["message"])
+    return
+  } else if !ok1 {
+    c.String(http.StatusInternalServerError, "Request handler returned an improperly formatted response")
+    return
+  } else {
+    json, err := json.Marshal(result)
+    if err != nil {
+      c.String(http.StatusInternalServerError, err.Error())
+    } else {
+      c.JSON(http.StatusOK, string(json))
+    }
+  }
+
 }
 ```
 
@@ -165,10 +188,10 @@ func main() {
 	}
 
   // Create a request handler
-	requestHandler := blest.createRequestHandler(router, nil)
+	requestHandler := blest.CreateRequestHandler(router, nil)
 
   // Ceate the server
-	server := blest.createHTTPServer(requestHandler, map[string]interface{}{
+	server := blest.CreateHTTPServer(requestHandler, map[string]interface{}{
     "port": 8080
   })
 
