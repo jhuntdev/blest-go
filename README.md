@@ -36,7 +36,7 @@ The following example uses Gin, but you can find examples with other frameworks 
 package main
 
 import (
-  "blest"
+  "github.com/jhuntdev/blest-go"
 	"github.com/gin-gonic/gin"
 	"net/http"
 )
@@ -144,7 +144,7 @@ func handlePostRequest(c *gin.Context) {
 package main
 
 import (
-  "blest"
+  "github.com/jhuntdev/blest-go"
 	"errors"
   "fmt"
 )
