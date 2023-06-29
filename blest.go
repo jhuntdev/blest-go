@@ -11,21 +11,12 @@ import (
 
 type BlestRequestHandler func(requests [][]interface{}, context map[string]interface{}) [2]interface{}
 
-type BlestRequestError struct {
-	code    int
-	message string
-}
-
-type BlestRequestObject struct {
+type blestRequestObject struct {
 	ID         string
 	Route      string
 	Parameters interface{}
 	Selector   []interface{}
 }
-
-type BlestRequestContext map[string]interface{}
-
-type BlestRoutes map[string][]interface{}
 
 func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *http.Server {
 	port := 8080
@@ -169,7 +160,7 @@ func CreateRequestHandler(routes map[string]interface{}, options map[string]inte
 				routeHandler = routeNotFound
 			}
 
-			requestObject := BlestRequestObject{
+			requestObject := blestRequestObject{
 				ID:         id,
 				Route:      route,
 				Parameters: parameters,
@@ -202,7 +193,7 @@ func routeNotFound() {
 	panic(errors.New("Route not found"))
 }
 
-func routeReducer(handler interface{}, request BlestRequestObject, context map[string]interface{}) ([4]interface{}, error) {
+func routeReducer(handler interface{}, request blestRequestObject, context map[string]interface{}) ([4]interface{}, error) {
 	var safeContext map[string]interface{}
 
 	if context != nil {
