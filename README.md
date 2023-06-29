@@ -28,7 +28,7 @@ go get github.com/jhuntdev/blest-go
 Use the `CreateRequestHandler` function to create a request handler suitable for use in an existing Python application. Use the `CreateHttpServer` function to create a standalone HTTP server for your request handler.
 <!-- Use the `createHttpClient` function to create a BLEST HTTP client. -->
 
-### createRequestHandler
+### CreateRequestHandler
 
 The following example uses Gin, but you can find examples with other frameworks [here](examples).
 
@@ -138,7 +138,7 @@ func handlePostRequest(c *gin.Context) {
 }
 ```
 
-### createHttpServer
+### CreateHttpServer
 
 ```go
 package main
