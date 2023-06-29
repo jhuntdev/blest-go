@@ -17,7 +17,7 @@ For a front-end implementation in React, please visit https://github.com/jhunt/b
 
 ## Installation
 
-Install BLEST Go from Go Modules.
+Install BLEST Go from Go Packages.
 
 ```bash
 go get github.com/jhuntdev/blest-go
