@@ -16,8 +16,6 @@ import (
 
 type BlestRequestHandler func(requests [][]interface{}, context map[string]interface{}) [2]interface{}
 
-type BlestRequestSender func(route string, parameters interface{}, selector []interface{}) (interface{}, error)
-
 type blestRequestObject struct {
 	ID         string
 	Route      string
