@@ -231,7 +231,7 @@ import (
 func main() {
 
 	// Set headers (optional)
-	headers := map[string]interface{}{
+	headers := map[string]string{
 		"Authorization": "Bearer token",
 	}
 
