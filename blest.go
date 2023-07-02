@@ -101,7 +101,7 @@ func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *
 	return server
 }
 
-func httpPostRequest(url string, data interface{}) [][]interface{} {
+func httpPostRequest(url string, data interface{}, headers map[string]string) [][]interface{} {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		fmt.Printf("Failed to marshal JSON data: %s", err)
@@ -115,6 +115,12 @@ func httpPostRequest(url string, data interface{}) [][]interface{} {
 	}
 
 	request.Header.Set("Content-Type", "application/json")
+
+	if headers != nil && len(headers) > 0 {
+		for key, value := range headers {
+			request.Header.Set(key, value)
+		}
+	}
 
 	client := &http.Client{}
 	response, err := client.Do(request)
@@ -187,7 +193,19 @@ func (e *eventEmitter) off(event string, ch chan interface{}) {
 	}
 }
 
-func CreateHttpClient(url string, options map[string]interface{}) func(string, ...interface{}) (map[string]interface{}, error) {
+func CreateHttpClient(url string, args ...interface{}) func(string, ...interface{}) (map[string]interface{}, error) {
+
+	var headers map[string]string
+
+	if len(args) > 0 {
+		o, oOk := args[0].(map[string]interface{})
+		if oOk && o != nil {
+			h, hOk := o["headers"].(map[string]string)
+			if hOk && h != nil {
+				headers = h
+			}
+		}
+	}
 
 	maxBatchSize := 100
 	queue := [][]interface{}{}
@@ -213,7 +231,7 @@ func CreateHttpClient(url string, options map[string]interface{}) func(string, .
 			timeout.Reset(1 * time.Millisecond)
 		}
 
-		data := httpPostRequest(url, newQueue)
+		data := httpPostRequest(url, newQueue, headers)
 
 		for _, r := range data {
 			emitter.emit(r[0].(string), r[2], r[3])

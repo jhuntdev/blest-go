@@ -211,7 +211,6 @@ func main() {
 
   // Listen for requests
 	log.Fatal(server.ListenAndServe())
-
 }
 ```
 
@@ -231,16 +230,20 @@ import (
 
 func main() {
 
-  // Create a client
-  request := blest.CreateHttpClient("http://localhost:8080")
-  
-  // Send a request
-  result, err := request("greet", map[string]interface{}{ "name": "Steve" }, []interface{}{ "greeting" })
-  if err != nil {
-    // Do something in case of error
-  }
-  // Do something with the result
+	// Set headers (optional)
+	headers := map[string]interface{}{
+		"Authorization": "Bearer token",
+	}
 
+	// Create a client
+	request := blest.CreateHttpClient("http://localhost:8080", map[string]interface{}{"headers": headers})
+	
+	// Send a request
+	result, err := request("greet", map[string]interface{}{ "name": "Steve" }, []interface{}{ "greeting" })
+	if err != nil {
+		// Do something in case of error
+	}
+	// Do something with the result
 }
 ```
 
