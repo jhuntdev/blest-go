@@ -1,15 +1,22 @@
 package blest
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"regexp"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 type BlestRequestHandler func(requests [][]interface{}, context map[string]interface{}) [2]interface{}
+
+type BlestRequestSender func(route string, parameters interface{}, selector []interface{}) (interface{}, error)
 
 type blestRequestObject struct {
 	ID         string
@@ -92,6 +99,189 @@ func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *
 	log.Println("Server listening on port 8080")
 
 	return server
+}
+
+func httpPostRequest(url string, data interface{}) [][]interface{} {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		fmt.Printf("Failed to marshal JSON data: %s", err)
+		return nil
+	}
+
+	request, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Printf("Failed to create request: %s", err)
+		return nil
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Printf("POST request failed: %s", err)
+		return nil
+	}
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		fmt.Printf("Failed to read response body: %s", err)
+		return nil
+	}
+
+	var result [][]interface{}
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		fmt.Printf("Failed to unmarshal JSON: %s", err)
+		return nil
+	}
+
+	return result
+}
+
+type eventEmitter struct {
+	events map[string][]chan interface{}
+}
+
+func (e *eventEmitter) on(event string, ch chan interface{}) {
+	if e.events == nil {
+		e.events = make(map[string][]chan interface{})
+	}
+	e.events[event] = append(e.events[event], ch)
+}
+
+func (e *eventEmitter) once(event string, ch chan interface{}) {
+	chOnce := make(chan interface{}, 1)
+	e.on(event, chOnce)
+	go func() {
+		defer close(chOnce)
+		for val := range chOnce {
+			ch <- val
+			break
+		}
+		e.off(event, chOnce)
+	}()
+}
+
+func (e *eventEmitter) emit(event string, args ...interface{}) {
+	channels := e.events[event]
+	if channels == nil {
+		return
+	}
+	for _, ch := range channels {
+		go func(ch chan interface{}) {
+			ch <- args
+		}(ch)
+	}
+}
+
+func (e *eventEmitter) off(event string, ch chan interface{}) {
+	if channels := e.events[event]; channels != nil {
+		for i, c := range channels {
+			if c == ch {
+				e.events[event] = append(channels[:i], channels[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+func CreateHttpClient(url string, options map[string]interface{}) func(string, ...interface{}) (map[string]interface{}, error) {
+
+	maxBatchSize := 100
+	queue := [][]interface{}{}
+	timeout := new(time.Timer)
+	emitter := &eventEmitter{}
+
+	timeout = nil
+
+	min := func(a, b int) int {
+		if a < b {
+			return a
+		}
+		return b
+	}
+
+	process := func() {
+		newQueue := queue[:min(len(queue), maxBatchSize)]
+		queue = queue[len(newQueue):]
+		timeout.Stop()
+		if len(queue) == 0 {
+			timeout = nil
+		} else {
+			timeout.Reset(1 * time.Millisecond)
+		}
+
+		data := httpPostRequest(url, newQueue)
+
+		for _, r := range data {
+			emitter.emit(r[0].(string), r[2], r[3])
+		}
+	}
+
+	request := func(route string, args ...interface{}) (map[string]interface{}, error) {
+		if route == "" {
+			return nil, errors.New("Route is required")
+		}
+
+		var parameters map[string]interface{}
+		if len(args) > 0 {
+			p, ok := args[0].(map[string]interface{})
+			if !ok && p != nil {
+				return nil, errors.New("Parameters should be a map")
+			}
+			parameters = p
+		}
+
+		var selector []interface{}
+		if len(args) > 1 {
+			s, ok := args[1].([]interface{})
+			if !ok && s != nil {
+				return nil, errors.New("Selector should be a slice")
+			}
+			selector = s
+		}
+
+		id := uuid.New().String()
+		ch := make(chan interface{}, 1)
+		emitter.once(id, ch)
+		queue = append(queue, []interface{}{id, route, parameters, selector})
+		if timeout == nil {
+			timeout = time.AfterFunc(1*time.Millisecond, process)
+		}
+		select {
+		case val := <-ch:
+			if err, ok := val.(error); ok {
+				return nil, err
+			}
+
+			myVal, ok := val.([]interface{})
+			if !ok || len(myVal) != 2 {
+				return nil, errors.New("Invalid response format")
+			}
+
+			errVal, ok := myVal[1].(map[string]interface{})
+			if !ok && errVal != nil {
+				return nil, errors.New("Invalid error format")
+			}
+			if errVal != nil {
+				errMsg, _ := errVal["message"].(string)
+				return nil, errors.New(errMsg)
+			}
+
+			result, ok := myVal[0].(map[string]interface{})
+			if !ok && result != nil {
+				return nil, errors.New("Invalid result format")
+			}
+
+			return result, nil
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("Request timed out")
+		}
+	}
+
+	return request
 }
 
 func CreateRequestHandler(routes map[string]interface{}, options map[string]interface{}) BlestRequestHandler {
