@@ -8,30 +8,488 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"reflect"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-type BlestRequestHandler func(requests [][]interface{}, context map[string]interface{}) [2]interface{}
+type RequestHandler func(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{})
 
-type blestRequestObject struct {
+type RequestObject struct {
 	ID         string
 	Route      string
 	Parameters interface{}
 	Selector   []interface{}
 }
 
-func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *http.Server {
-	port := 8080
+type Router struct {
+	Options       map[string]interface{}
+	Introspection bool
+	Middleware    []interface{}
+	Afterware     []interface{}
+	Timeout       int
+	Routes        map[string]Route
+}
 
-	if options != nil {
-		portOption, err := options.(map[string]interface{})["port"].(int)
-		if !err {
-			port = portOption
+type Route struct {
+	Handler     []interface{}
+	Description string
+	Parameters  interface{}
+	Result      interface{}
+	Visible     bool
+	Validate    bool
+	Timeout     int
+}
+
+type HttpClient struct {
+	Url          string
+	Options      map[string]interface{}
+	Headers      map[string]string
+	MaxBatchSize int
+	Queue        [][]interface{}
+	Timeout      *time.Timer
+	Emitter      *EventEmitter
+}
+
+type BlestError struct {
+	Message    string
+	StatusCode int
+	Code       string
+}
+
+var routeRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-/]*[a-zA-Z0-9]$`)
+
+func validateRoute(route string) string {
+	if route == "" {
+		return "Route is required"
+	} else if !routeRegex.MatchString(route) {
+		routeLength := len(route)
+		if routeLength < 2 {
+			return "Route should be at least two characters long"
+		} else if route[routeLength-1] == '/' {
+			return "Route should not end in a forward slash"
+		} else if !isLetter(route[0]) {
+			return "Route should start with a letter"
+		} else if !isLetterOrNumber(route[routeLength-1]) {
+			return "Route should end with a letter or a number"
+		} else {
+			return "Route should contain only letters, numbers, dashes, underscores, and forward slashes"
+		}
+	} else if strings.Contains(route, "/") {
+		subRoutes := strings.Split(route, "/")
+		for _, subRoute := range subRoutes {
+			if len(subRoute) < 2 {
+				return "Sub-routes should be at least two characters long"
+			} else if !isLetter(subRoute[0]) {
+				return "Sub-routes should start with a letter"
+			} else if !isLetterOrNumber(subRoute[len(subRoute)-1]) {
+				return "Sub-routes should end with a letter or a number"
+			}
 		}
 	}
+	return ""
+}
+
+func isLetter(char byte) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+}
+
+func isLetterOrNumber(char byte) bool {
+	return isLetter(char) || (char >= '0' && char <= '9')
+}
+
+func NewBlestError(message string, args ...interface{}) error {
+	var status int
+	var code string
+	if len(args) > 1 {
+		s, sOk := args[0].(int)
+		if sOk && s > 0 {
+			status = s
+		} else {
+			status = 500
+		}
+	}
+	if len(args) > 2 {
+		c, cOk := args[1].(string)
+		if cOk && c != "" {
+			code = c
+		}
+	}
+	return &BlestError{
+		Message:    message,
+		StatusCode: status,
+		Code:       code,
+	}
+}
+
+func (be *BlestError) Error() string {
+	return fmt.Sprint(be.Message)
+}
+
+func NewRouter(args ...interface{}) *Router {
+	var options map[string]interface{}
+	if len(args) > 0 {
+		o, oOk := args[0].(map[string]interface{})
+		if oOk {
+			options = o
+		}
+	}
+	var introspection bool
+	if options["introspection"] != nil {
+		i, ok := options["introspection"].(bool)
+		if ok {
+			introspection = i
+		}
+	}
+	var timeout int
+	if options["timeout"] != nil {
+		t, ok := options["timeout"].(int)
+		if !ok {
+			panic("Timeout should be an integer")
+		}
+		if t < 0 {
+			panic("Timeout should be a positive integer")
+		}
+		timeout = t
+	}
+	router := &Router{
+		Options:       options,
+		Introspection: introspection,
+		Timeout:       timeout,
+		Routes:        make(map[string]Route),
+	}
+	return router
+}
+
+func (r *Router) Use(handlers ...interface{}) {
+	for _, handler := range handlers {
+		if !isFunction(handler) {
+			panic("All arguments should be functions")
+		}
+		argCount := reflect.ValueOf(handler).Type().NumIn()
+		switch argCount {
+		case 0, 1, 2:
+			r.Middleware = append(r.Middleware, handler)
+		case 3:
+			r.Afterware = append(r.Afterware, handler)
+		default:
+			panic("Middleware should have at most three arguments")
+		}
+	}
+}
+
+func isFunction(fn interface{}) bool {
+	fnType := reflect.TypeOf(fn)
+	return fnType.Kind() == reflect.Func
+}
+
+func isSlice(v interface{}) bool {
+	t := reflect.TypeOf(v)
+	return t.Kind() == reflect.Slice
+}
+
+func (r *Router) Route(route string, args ...interface{}) {
+	lastArg := args[len(args)-1]
+	var options map[string]interface{}
+	handlers := args
+
+	if !isFunction(lastArg) {
+		if opts, ok := lastArg.(map[string]interface{}); ok {
+			options = opts
+		} else {
+			panic("Options should be a map")
+		}
+		handlers = args[:len(args)-1]
+	}
+
+	routeError := validateRoute(route)
+	if routeError != "" {
+		panic(routeError)
+	} else if _, exists := r.Routes[route]; exists {
+		panic("Route already exists")
+	} else if len(handlers) == 0 {
+		panic("At least one handler is required")
+	} else if options != nil && reflect.TypeOf(options).Kind() != reflect.Map {
+		panic("Last argument must be a configuration map or a handler function")
+	} else {
+		for i := 0; i < len(handlers); i++ {
+			if !isFunction(handlers[i]) {
+				panic(fmt.Sprintf("Handlers must be functions: %d", i))
+			}
+		}
+	}
+
+	r.Routes[route] = Route{
+		Handler:     append(append([]interface{}{}, r.Middleware...), handlers...),
+		Description: "",
+		Parameters:  nil,
+		Result:      nil,
+		Visible:     r.Introspection,
+		Validate:    false,
+		Timeout:     r.Timeout,
+	}
+
+	if options != nil {
+		r.Describe(route, options)
+	}
+}
+
+func (r *Router) Describe(route string, config map[string]interface{}) error {
+	routeInfo, exists := r.Routes[route]
+	if !exists {
+		return errors.New("Route does not exist")
+	}
+
+	if config == nil || reflect.TypeOf(config).Kind() != reflect.Map {
+		return errors.New("Configuration should be a map")
+	}
+
+	if description, ok := config["description"].(string); ok {
+		routeInfo.Description = description
+	}
+
+	if parameters, ok := config["parameters"].(map[string]interface{}); ok {
+		routeInfo.Parameters = parameters
+	}
+
+	if result, ok := config["result"].(map[string]interface{}); ok {
+		routeInfo.Result = result
+	}
+
+	if visible, ok := config["visible"].(bool); ok {
+		routeInfo.Visible = visible
+	}
+
+	if validate, ok := config["validate"].(bool); ok {
+		routeInfo.Validate = validate
+	}
+
+	if timeout, ok := config["timeout"].(float64); ok {
+		if timeout <= 0 || timeout != float64(int(timeout)) {
+			return errors.New("Timeout should be a positive integer")
+		}
+		routeInfo.Timeout = int(timeout)
+	}
+	r.Routes[route] = routeInfo
+	return nil
+}
+
+func (r *Router) Merge(router *Router) error {
+	if router == nil {
+		return errors.New("Router is required")
+	}
+
+	newRoutes := make([]string, 0, len(router.Routes))
+	for route := range router.Routes {
+		newRoutes = append(newRoutes, route)
+	}
+
+	existingRoutes := make([]string, 0, len(r.Routes))
+	for route := range r.Routes {
+		existingRoutes = append(existingRoutes, route)
+	}
+
+	if len(newRoutes) == 0 {
+		return errors.New("No routes to merge")
+	}
+
+	for _, route := range newRoutes {
+		if contains(existingRoutes, route) {
+			return errors.New("Cannot merge duplicate routes: " + route)
+		} else {
+			var timeout int
+			if router.Routes[route].Timeout > 0 {
+				timeout = router.Routes[route].Timeout
+			} else {
+				timeout = r.Timeout
+			}
+			r.Routes[route] = Route{
+				Handler:     append(append(append([]interface{}{}, r.Middleware...), router.Routes[route].Handler...), r.Afterware...),
+				Description: router.Routes[route].Description,
+				Parameters:  router.Routes[route].Parameters,
+				Result:      router.Routes[route].Result,
+				Visible:     router.Routes[route].Visible,
+				Validate:    router.Routes[route].Validate,
+				Timeout:     timeout,
+			}
+		}
+	}
+
+	return nil
+}
+
+func contains(slice []string, value string) bool {
+	for _, item := range slice {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Router) Namespace(prefix string, router *Router) error {
+	if router == nil {
+		return errors.New("Router is required")
+	}
+
+	prefixError := validateRoute(prefix)
+	if prefixError != "" {
+		return errors.New(prefixError)
+	}
+
+	newRoutes := make([]string, 0, len(router.Routes))
+	for route := range router.Routes {
+		newRoutes = append(newRoutes, route)
+	}
+
+	existingRoutes := make([]string, 0, len(r.Routes))
+	for route := range r.Routes {
+		existingRoutes = append(existingRoutes, route)
+	}
+
+	if len(newRoutes) == 0 {
+		return errors.New("No routes to namespace")
+	}
+
+	for _, route := range newRoutes {
+		nsRoute := prefix + "/" + route
+		if contains(existingRoutes, route) {
+			return errors.New("Cannot merge duplicate routes: " + nsRoute)
+		} else {
+			var timeout int
+			if router.Routes[route].Timeout > 0 {
+				timeout = router.Routes[route].Timeout
+			} else {
+				timeout = r.Timeout
+			}
+			r.Routes[nsRoute] = Route{
+				Handler:     append(append(append([]interface{}{}, r.Middleware...), router.Routes[route].Handler...), r.Afterware...),
+				Description: router.Routes[route].Description,
+				Parameters:  router.Routes[route].Parameters,
+				Result:      router.Routes[route].Result,
+				Visible:     router.Routes[route].Visible,
+				Validate:    router.Routes[route].Validate,
+				Timeout:     timeout,
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *Router) Handle(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{}) {
+	return handleRequest(r.Routes, requests, context)
+}
+
+func Default(options map[string]interface{}) *Router {
+	return NewRouter(options)
+}
+
+func (r *Router) Run() {
+	server := HttpServer(r.Handle, r.Options)
+	log.Fatal(server.ListenAndServe())
+}
+
+func constructHttpHeaders(options map[string]interface{}) map[string]string {
+	httpHeaders := map[string]string{
+		"access-control-allow-origin":       "",
+		"content-security-policy":           "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests",
+		"cross-origin-opener-policy":        "same-origin",
+		"cross-origin-resource-policy":      "same-origin",
+		"origin-agent-cluster":              "?1",
+		"referrer-policy":                   "no-referrer",
+		"strict-transport-security":         "max-age=15552000; includeSubDomains",
+		"x-content-type-options":            "nosniff",
+		"x-dns-prefetch-control":            "off",
+		"x-download-options":                "noopen",
+		"x-frame-options":                   "SAMEORIGIN",
+		"x-permitted-cross-domain-policies": "none",
+		"x-xss-protection":                  "0",
+	}
+
+	accessControlAllowOrigin, acaoOk := options["accessControlAllowOrigin"].(string)
+	cors, corsOk := options["cors"].(bool)
+	if acaoOk && accessControlAllowOrigin != "" {
+		httpHeaders["access-control-allow-origin"] = accessControlAllowOrigin
+	} else if corsOk && cors {
+		httpHeaders["access-control-allow-origin"] = "*"
+	}
+	contentSecurityPolicy, cspOk := options["contentSecurityPolicy"].(string)
+	if cspOk && contentSecurityPolicy != "" {
+		httpHeaders["content-security-policy"] = contentSecurityPolicy
+	}
+	crossOriginOpenerPolicy, coopOk := options["crossOriginOpenerPolicy"].(string)
+	if coopOk && crossOriginOpenerPolicy != "" {
+		httpHeaders["cross-origin-opener-policy"] = crossOriginOpenerPolicy
+	}
+	crossOriginResourcePolicy, corpOk := options["crossOriginResourcePolicy"].(string)
+	if corpOk && crossOriginResourcePolicy != "" {
+		httpHeaders["cross-origin-resource-policy"] = crossOriginResourcePolicy
+	}
+	originAgentCluster, oacOk := options["originAgentCluster"].(string)
+	if oacOk && originAgentCluster != "" {
+		httpHeaders["origin-agent-cluster"] = originAgentCluster
+	}
+	referrerPolicy, rpOk := options["referrerPolicy"].(string)
+	if rpOk && referrerPolicy != "" {
+		httpHeaders["referrer-policy"] = referrerPolicy
+	}
+	strictTransportSecurity, stsOk := options["strictTransportSecurity"].(string)
+	if stsOk && strictTransportSecurity != "" {
+		httpHeaders["strict-transport-security"] = strictTransportSecurity
+	}
+	xContentTypeOptions, xctoOk := options["xContentTypeOptions"].(string)
+	if xctoOk && xContentTypeOptions != "" {
+		httpHeaders["x-content-type-options"] = xContentTypeOptions
+	}
+	xDnsPrefetchControl, xdpcOk := options["xDnsPrefetchControl"].(string)
+	if xdpcOk && xDnsPrefetchControl != "" {
+		httpHeaders["x-dns-prefetch-options"] = xDnsPrefetchControl
+	}
+	xDownloadOptions, xdoOk := options["xDownloadOptions"].(string)
+	if xdoOk && xDownloadOptions != "" {
+		httpHeaders["x-download-options"] = xDownloadOptions
+	}
+	xFrameOptions, xfoOk := options["xFrameOptions"].(string)
+	if xfoOk && xFrameOptions != "" {
+		httpHeaders["x-frame-options"] = xFrameOptions
+	}
+	xPermittedCrossDomainPolicies, xpcdpOk := options["xPermittedCrossDomainPolicies"].(string)
+	if xpcdpOk && xPermittedCrossDomainPolicies != "" {
+		httpHeaders["x-permitted-cross-domain-policies"] = xPermittedCrossDomainPolicies
+	}
+	xXssProtection, xxpOk := options["xXssProtection"].(string)
+	if xxpOk && xXssProtection != "" {
+		httpHeaders["x-xss-protection"] = xXssProtection
+	}
+	return httpHeaders
+}
+
+func HttpServer(requestHandler RequestHandler, args ...interface{}) *http.Server {
+
+	var options map[string]interface{}
+
+	opts, ok := args[0].(map[string]interface{})
+	if ok {
+		options = opts
+	} else {
+		fmt.Println("Value is not of type Person")
+	}
+
+	port, portOk := options["port"].(int)
+	if !portOk || port == 0 {
+		port = 8080
+	}
+
+	url, urlOk := options["url"].(string)
+	if !urlOk || url == "" {
+		url = "/"
+	}
+
+	httpHeaders := constructHttpHeaders(options)
 
 	server := &http.Server{
 		Addr: fmt.Sprintf("%s%d", ":", port),
@@ -48,6 +506,20 @@ func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *
 			return
 		}
 
+		w.Header().Set("access-control-allow-origin", httpHeaders["access-control-allow-origin"])
+		w.Header().Set("content-security-policy", httpHeaders["content-security-policy"])
+		w.Header().Set("cross-origin-opener-policy", httpHeaders["cross-origin-opener-policy"])
+		w.Header().Set("cross-origin-resource-policy", httpHeaders["cross-origin-resource-policy"])
+		w.Header().Set("origin-agent-cluster", httpHeaders["origin-agent-cluster"])
+		w.Header().Set("referrer-policy", httpHeaders["referrer-policy"])
+		w.Header().Set("strict-transport-security", httpHeaders["strict-transport-security"])
+		w.Header().Set("x-content-type-options", httpHeaders["x-content-type-options"])
+		w.Header().Set("x-dns-prefetch-control", httpHeaders["x-dns-prefetch-control"])
+		w.Header().Set("x-download-options", httpHeaders["x-download-options"])
+		w.Header().Set("x-frame-options", httpHeaders["x-frame-options"])
+		w.Header().Set("x-permitted-cross-domain-policies", httpHeaders["x-permitted-cross-domain-policies"])
+		w.Header().Set("x-xss-protection", httpHeaders["x-xss-protection"])
+
 		var data [][]interface{}
 		err := json.NewDecoder(r.Body).Decode(&data)
 		if err != nil {
@@ -59,23 +531,23 @@ func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *
 			"headers": r.Header,
 		}
 
-		response := requestHandler(data, context)
-		result, ok1 := response[0].([][4]interface{})
-		reqErr, ok2 := response[1].(map[string]interface{})
-		if ok2 && reqErr != nil {
+		result, reqErr := requestHandler(data, context)
+		// result, ok1 := response[0].([][4]interface{})
+		// reqErr, ok2 := response[1].(map[string]interface{})
+		if reqErr != nil {
 			log.Println(reqErr["message"])
-			statusCode, ok3 := reqErr["code"].(int)
-			if !ok3 {
+			statusCode, ok := reqErr["code"].(int)
+			if !ok {
 				statusCode = 500
 			}
 			w.WriteHeader(statusCode)
 			fmt.Fprint(w, reqErr["error"])
 			return
-		} else if !ok1 {
-			log.Println(reqErr)
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprint(w, "Request handler returned an improperly formatted response")
-			return
+			// } else {
+			// 	log.Println(reqErr)
+			// 	w.WriteHeader(http.StatusInternalServerError)
+			// 	fmt.Fprint(w, "Request handler returned an improperly formatted response")
+			// 	return
 		} else if result != nil {
 			responseJSON, err := json.Marshal(result)
 			if err != nil {
@@ -93,8 +565,6 @@ func CreateHTTPServer(requestHandler BlestRequestHandler, options interface{}) *
 			return
 		}
 	})
-
-	log.Println("Server listening on port 8080")
 
 	return server
 }
@@ -114,7 +584,7 @@ func httpPostRequest(url string, data interface{}, headers map[string]string) []
 
 	request.Header.Set("Content-Type", "application/json")
 
-	if headers != nil && len(headers) > 0 {
+	if len(headers) > 0 {
 		for key, value := range headers {
 			request.Header.Set(key, value)
 		}
@@ -144,18 +614,18 @@ func httpPostRequest(url string, data interface{}, headers map[string]string) []
 	return result
 }
 
-type eventEmitter struct {
+type EventEmitter struct {
 	events map[string][]chan interface{}
 }
 
-func (e *eventEmitter) on(event string, ch chan interface{}) {
+func (e *EventEmitter) on(event string, ch chan interface{}) {
 	if e.events == nil {
 		e.events = make(map[string][]chan interface{})
 	}
 	e.events[event] = append(e.events[event], ch)
 }
 
-func (e *eventEmitter) once(event string, ch chan interface{}) {
+func (e *EventEmitter) once(event string, ch chan interface{}) {
 	chOnce := make(chan interface{}, 1)
 	e.on(event, chOnce)
 	go func() {
@@ -168,7 +638,7 @@ func (e *eventEmitter) once(event string, ch chan interface{}) {
 	}()
 }
 
-func (e *eventEmitter) emit(event string, args ...interface{}) {
+func (e *EventEmitter) emit(event string, args ...interface{}) {
 	channels := e.events[event]
 	if channels == nil {
 		return
@@ -180,7 +650,7 @@ func (e *eventEmitter) emit(event string, args ...interface{}) {
 	}
 }
 
-func (e *eventEmitter) off(event string, ch chan interface{}) {
+func (e *EventEmitter) off(event string, ch chan interface{}) {
 	if channels := e.events[event]; channels != nil {
 		for i, c := range channels {
 			if c == ch {
@@ -191,277 +661,460 @@ func (e *eventEmitter) off(event string, ch chan interface{}) {
 	}
 }
 
-func CreateHttpClient(url string, args ...interface{}) func(string, ...interface{}) (map[string]interface{}, error) {
-
+func NewHttpClient(url string, args ...interface{}) *HttpClient {
+	var options map[string]interface{}
 	var headers map[string]string
-
 	if len(args) > 0 {
 		o, oOk := args[0].(map[string]interface{})
 		if oOk && o != nil {
+			options = o
 			h, hOk := o["headers"].(map[string]string)
 			if hOk && h != nil {
 				headers = h
 			}
 		}
 	}
-
 	maxBatchSize := 100
 	queue := [][]interface{}{}
 	timeout := new(time.Timer)
-	emitter := &eventEmitter{}
-
+	emitter := &EventEmitter{}
 	timeout = nil
-
-	min := func(a, b int) int {
-		if a < b {
-			return a
-		}
-		return b
+	client := &HttpClient{
+		Url:          url,
+		Options:      options,
+		Headers:      headers,
+		MaxBatchSize: maxBatchSize,
+		Queue:        queue,
+		Timeout:      timeout,
+		Emitter:      emitter,
 	}
-
-	process := func() {
-		newQueue := queue[:min(len(queue), maxBatchSize)]
-		queue = queue[len(newQueue):]
-		timeout.Stop()
-		if len(queue) == 0 {
-			timeout = nil
-		} else {
-			timeout.Reset(1 * time.Millisecond)
-		}
-
-		data := httpPostRequest(url, newQueue, headers)
-
-		for _, r := range data {
-			emitter.emit(r[0].(string), r[2], r[3])
-		}
-	}
-
-	request := func(route string, args ...interface{}) (map[string]interface{}, error) {
-		if route == "" {
-			return nil, errors.New("Route is required")
-		}
-
-		var parameters map[string]interface{}
-		if len(args) > 0 {
-			p, ok := args[0].(map[string]interface{})
-			if !ok && p != nil {
-				return nil, errors.New("Parameters should be a map")
-			}
-			parameters = p
-		}
-
-		var selector []interface{}
-		if len(args) > 1 {
-			s, ok := args[1].([]interface{})
-			if !ok && s != nil {
-				return nil, errors.New("Selector should be a slice")
-			}
-			selector = s
-		}
-
-		id := uuid.New().String()
-		ch := make(chan interface{}, 1)
-		emitter.once(id, ch)
-		queue = append(queue, []interface{}{id, route, parameters, selector})
-		if timeout == nil {
-			timeout = time.AfterFunc(1*time.Millisecond, process)
-		}
-		select {
-		case val := <-ch:
-			if err, ok := val.(error); ok {
-				return nil, err
-			}
-
-			myVal, ok := val.([]interface{})
-			if !ok || len(myVal) != 2 {
-				return nil, errors.New("Invalid response format")
-			}
-
-			errVal, ok := myVal[1].(map[string]interface{})
-			if !ok && errVal != nil {
-				return nil, errors.New("Invalid error format")
-			}
-			if errVal != nil {
-				errMsg, _ := errVal["message"].(string)
-				return nil, errors.New(errMsg)
-			}
-
-			result, ok := myVal[0].(map[string]interface{})
-			if !ok && result != nil {
-				return nil, errors.New("Invalid result format")
-			}
-
-			return result, nil
-		case <-time.After(5 * time.Second):
-			return nil, errors.New("Request timed out")
-		}
-	}
-
-	return request
+	return client
 }
 
-func CreateRequestHandler(routes map[string]interface{}, options map[string]interface{}) BlestRequestHandler {
+func (c *HttpClient) Process() {
+	newQueue := c.Queue[:min(len(c.Queue), c.MaxBatchSize)]
+	c.Queue = c.Queue[len(newQueue):]
+	c.Timeout.Stop()
+	if len(c.Queue) == 0 {
+		c.Timeout = nil
+	} else {
+		c.Timeout.Reset(1 * time.Millisecond)
+	}
+	data := httpPostRequest(c.Url, newQueue, c.Headers)
+	for _, r := range data {
+		c.Emitter.emit(r[0].(string), r[2], r[3])
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (c *HttpClient) Request(route string, args ...interface{}) (map[string]interface{}, error) {
+	if route == "" {
+		return nil, errors.New("Route is required")
+	}
+
+	var parameters map[string]interface{}
+	if len(args) > 0 {
+		p, ok := args[0].(map[string]interface{})
+		if !ok && p != nil {
+			return nil, errors.New("Parameters should be a map")
+		}
+		parameters = p
+	}
+
+	var selector []interface{}
+	if len(args) > 1 {
+		s, ok := args[1].([]interface{})
+		if !ok && s != nil {
+			return nil, errors.New("Selector should be a slice")
+		}
+		selector = s
+	}
+
+	id := uuid.New().String()
+	ch := make(chan interface{}, 1)
+	c.Emitter.once(id, ch)
+	c.Queue = append(c.Queue, []interface{}{id, route, parameters, selector})
+	if c.Timeout == nil {
+		c.Timeout = time.AfterFunc(1*time.Millisecond, c.Process)
+	}
+	select {
+	case val := <-ch:
+		if err, ok := val.(error); ok {
+			return nil, err
+		}
+
+		myVal, ok := val.([]interface{})
+		if !ok || len(myVal) != 2 {
+			return nil, errors.New("Invalid response format")
+		}
+
+		errVal, ok := myVal[1].(map[string]interface{})
+		if !ok && errVal != nil {
+			return nil, errors.New("Invalid error format")
+		}
+		if errVal != nil {
+			errMsg, _ := errVal["message"].(string)
+			return nil, errors.New(errMsg)
+		}
+
+		result, ok := myVal[0].(map[string]interface{})
+		if !ok && result != nil {
+			return nil, errors.New("Invalid result format")
+		}
+
+		return result, nil
+	case <-time.After(5 * time.Second):
+		return nil, errors.New("Request timed out")
+	}
+}
+
+// func HttpClient(url string, args ...interface{}) func(string, ...interface{}) (map[string]interface{}, error) {
+
+// 	var headers map[string]string
+
+// 	if len(args) > 0 {
+// 		o, oOk := args[0].(map[string]interface{})
+// 		if oOk && o != nil {
+// 			h, hOk := o["headers"].(map[string]string)
+// 			if hOk && h != nil {
+// 				headers = h
+// 			}
+// 		}
+// 	}
+
+// 	maxBatchSize := 100
+// 	queue := [][]interface{}{}
+// 	timeout := new(time.Timer)
+// 	emitter := &EventEmitter{}
+
+// 	timeout = nil
+
+// 	min := func(a, b int) int {
+// 		if a < b {
+// 			return a
+// 		}
+// 		return b
+// 	}
+
+// 	process := func() {
+// 		newQueue := queue[:min(len(queue), maxBatchSize)]
+// 		queue = queue[len(newQueue):]
+// 		timeout.Stop()
+// 		if len(queue) == 0 {
+// 			timeout = nil
+// 		} else {
+// 			timeout.Reset(1 * time.Millisecond)
+// 		}
+
+// 		data := httpPostRequest(url, newQueue, headers)
+
+// 		for _, r := range data {
+// 			emitter.emit(r[0].(string), r[2], r[3])
+// 		}
+// 	}
+
+// 	request := func(route string, args ...interface{}) (map[string]interface{}, error) {
+// 		if route == "" {
+// 			return nil, errors.New("Route is required")
+// 		}
+
+// 		var parameters map[string]interface{}
+// 		if len(args) > 0 {
+// 			p, ok := args[0].(map[string]interface{})
+// 			if !ok && p != nil {
+// 				return nil, errors.New("Parameters should be a map")
+// 			}
+// 			parameters = p
+// 		}
+
+// 		var selector []interface{}
+// 		if len(args) > 1 {
+// 			s, ok := args[1].([]interface{})
+// 			if !ok && s != nil {
+// 				return nil, errors.New("Selector should be a slice")
+// 			}
+// 			selector = s
+// 		}
+
+// 		id := uuid.New().String()
+// 		ch := make(chan interface{}, 1)
+// 		emitter.once(id, ch)
+// 		queue = append(queue, []interface{}{id, route, parameters, selector})
+// 		if timeout == nil {
+// 			timeout = time.AfterFunc(1*time.Millisecond, process)
+// 		}
+// 		select {
+// 		case val := <-ch:
+// 			if err, ok := val.(error); ok {
+// 				return nil, err
+// 			}
+
+// 			myVal, ok := val.([]interface{})
+// 			if !ok || len(myVal) != 2 {
+// 				return nil, errors.New("Invalid response format")
+// 			}
+
+// 			errVal, ok := myVal[1].(map[string]interface{})
+// 			if !ok && errVal != nil {
+// 				return nil, errors.New("Invalid error format")
+// 			}
+// 			if errVal != nil {
+// 				errMsg, _ := errVal["message"].(string)
+// 				return nil, errors.New(errMsg)
+// 			}
+
+// 			result, ok := myVal[0].(map[string]interface{})
+// 			if !ok && result != nil {
+// 				return nil, errors.New("Invalid result format")
+// 			}
+
+// 			return result, nil
+// 		case <-time.After(5 * time.Second):
+// 			return nil, errors.New("Request timed out")
+// 		}
+// 	}
+
+// 	return request
+// }
+
+func CreateRequestHandler(routes map[string]Route, options map[string]interface{}) RequestHandler {
 	if options != nil {
 		fmt.Println("The \"options\" argument is not yet used, but may be used in the future")
 	}
 
-	routeRegex := regexp.MustCompile("^[a-zA-Z][a-zA-Z0-9_\\-/]*[a-zA-Z0-9_\\-]$")
-
-	handler := func(requests [][]interface{}, context map[string]interface{}) [2]interface{} {
-		if requests == nil || len(requests) == 0 {
-			return handleError(400, "Request body should be a JSON array")
-		}
-
-		uniqueIds := make(map[string]bool)
-		results := make([][4]interface{}, len(requests))
-
-		for i, request := range requests {
-			requestLen := len(request)
-
-			if requestLen < 2 {
-				return handleError(400, "Request item should be an array")
-			}
-
-			id, ok := request[0].(string)
-			if !ok || id == "" {
-				return handleError(400, "Request item should have an ID")
-			}
-
-			route, ok := request[1].(string)
-			if !ok || route == "" {
-				return handleError(400, "Request item should have a route")
-			}
-
-			if !routeRegex.MatchString(route) {
-				routeLength := len(route)
-				if routeLength < 2 {
-					return handleError(400, "Request item route should be at least two characters long")
-				} else if route[routeLength-1] == '/' {
-					return handleError(400, "Request item route should not end in a forward slash")
-				} else if !regexp.MustCompile("[a-zA-Z]").MatchString(route[:1]) {
-					return handleError(400, "Request item route should start with a letter")
-				} else {
-					return handleError(400, "Request item route should contain only letters, numbers, dashes, underscores, and forward slashes")
-				}
-			}
-
-			parameters := make(map[string]interface{})
-			if requestLen > 2 {
-				parameters, _ = request[2].(map[string]interface{})
-			}
-
-			var selector []interface{}
-			if requestLen > 3 {
-				selector, _ = request[3].([]interface{})
-			}
-
-			if _, exists := uniqueIds[id]; exists {
-				return handleError(400, "Request items should have unique IDs")
-			}
-
-			uniqueIds[id] = true
-
-			routeHandler, exists := routes[route]
-			if !exists {
-				routeHandler = routeNotFound
-			}
-
-			requestObject := blestRequestObject{
-				ID:         id,
-				Route:      route,
-				Parameters: parameters,
-				Selector:   selector,
-			}
-
-			result, err := routeReducer(routeHandler, requestObject, context)
-			if err != nil {
-				return handleError(500, err.Error())
-			}
-
-			results[i] = result
-		}
-
-		return handleResult(results)
+	handler := func(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{}) {
+		return handleRequest(routes, requests, context)
 	}
 
 	return handler
 }
 
-func handleResult(result [][4]interface{}) [2]interface{} {
-	return [2]interface{}{result, nil}
-}
-
-func handleError(code int, message string) [2]interface{} {
-	return [2]interface{}{nil, map[string]interface{}{"code": code, "message": message}}
-}
-
-func routeNotFound() {
-	panic(errors.New("Route not found"))
-}
-
-func routeReducer(handler interface{}, request blestRequestObject, context map[string]interface{}) ([4]interface{}, error) {
-	var safeContext map[string]interface{}
-
-	if context != nil {
-		safeContext = deepCopyMap(context)
-	} else {
-		safeContext = make(map[string]interface{})
+func handleRequest(routes map[string]Route, requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{}) {
+	if routes == nil {
+		panic("Routes are required")
+	} else if len(requests) == 0 {
+		return handleError(400, "Request body should be a JSON array")
 	}
 
-	var result interface{}
-	var err error
+	uniqueIds := make(map[string]bool)
+	var results [][4]interface{}
 
-	switch h := handler.(type) {
-	case func(interface{}, map[string]interface{}) (interface{}, error):
-		result, err = h(request.Parameters, safeContext)
-	case func(interface{}, *map[string]interface{}) (interface{}, error):
-		result, err = h(request.Parameters, &safeContext)
-	case []func(interface{}, map[string]interface{}) (interface{}, error):
-		for i, f := range h {
-			tempResult, tempErr := f(request.Parameters, safeContext)
-			if i == len(h)-1 {
-				result = tempResult
+	for _, request := range requests {
+		if !isSlice(request) {
+			return handleError(400, "Request item should be an array")
+		}
+
+		id, ok := request[0].(string)
+		if !ok || id == "" {
+			return handleError(400, "Request item should have an ID")
+		}
+
+		route, ok := request[1].(string)
+		if !ok || route == "" {
+			return handleError(400, "Request item should have a route")
+		}
+
+		var parameters map[string]interface{}
+		if len(request) > 2 {
+			p, ok := request[2].(map[string]interface{})
+			if ok {
+				parameters = p
+			}
+		}
+		var selector []interface{}
+		if len(request) > 3 {
+			s, ok := request[3].([]interface{})
+			if ok {
+				selector = s
+			}
+		}
+
+		if _, exists := uniqueIds[id]; exists {
+			return handleError(400, "Request items should have unique IDs")
+		}
+		uniqueIds[id] = true
+
+		var timeout int
+		var routeHandler []interface{}
+		thisRoute, exists := routes[route]
+		if exists {
+			routeHandler = thisRoute.Handler
+			if thisRoute.Timeout > 0 {
+				timeout = thisRoute.Timeout
+			}
+		} else {
+			routeHandler = []interface{}{routeNotFound}
+		}
+
+		requestObject := RequestObject{
+			ID:         id,
+			Route:      route,
+			Parameters: parameters,
+			Selector:   selector,
+		}
+
+		myContext := map[string]interface{}{
+			"requestId":   id,
+			"routeName":   route,
+			"selector":    selector,
+			"requestTime": time.Now().UnixNano() / int64(time.Millisecond),
+		}
+		for key, value := range context {
+			myContext[key] = value
+		}
+
+		resultChan := routeReducer(routeHandler, requestObject, myContext, timeout)
+		// if err != nil {
+		// 	return handleError(500, err.Error())
+		// }
+
+		for result := range resultChan {
+			results = append(results, result)
+		}
+	}
+
+	return handleResult(results)
+}
+
+func handleResult(result [][4]interface{}) ([][4]interface{}, map[string]interface{}) {
+	return result, nil
+}
+
+func handleError(code int, message string) ([][4]interface{}, map[string]interface{}) {
+	return nil, map[string]interface{}{"code": code, "message": message}
+}
+
+func routeNotFound() (map[string]interface{}, error) {
+	return nil, NewBlestError("Not Found", 404, "NOT_FOUND")
+}
+
+func routeReducer(handler []interface{}, request RequestObject, context map[string]interface{}, timeout int) <-chan [4]interface{} {
+	resultChan := make(chan [4]interface{})
+
+	go func() {
+		defer close(resultChan)
+
+		var timer *time.Timer
+		var timedOut bool
+		id, route, parameters, selector := request.ID, request.Route, request.Parameters, request.Selector
+
+		if timeout > 0 {
+			timer = time.AfterFunc(time.Duration(timeout)*time.Millisecond, func() {
+				timedOut = true
+				fmt.Printf("The route \"%s\" timed out after %d milliseconds\n", route, timeout)
+				resultChan <- [4]interface{}{id, route, nil, map[string]interface{}{"message": "Internal Server Error", "statusCode": 500}}
+			})
+		}
+
+		safeContext := deepCopy(context).(map[string]interface{})
+		var result interface{}
+		var err error
+
+		for _, f := range handler {
+			argCount := reflect.ValueOf(f).Type().NumIn()
+			if (timedOut || err != nil) && argCount <= 2 {
+				continue
+			}
+			if err == nil && argCount > 2 {
+				continue
+			}
+			var tempResult interface{}
+			var tempErr error
+			switch h := f.(type) {
+			// Middleware
+			case func():
+				h()
+			case func(interface{}):
+				h(parameters)
+			case func(interface{}, interface{}):
+				h(parameters, safeContext)
+			case func(map[string]interface{}):
+				h(parameters.(map[string]interface{}))
+			case func(map[string]interface{}, map[string]interface{}):
+				h(parameters.(map[string]interface{}), safeContext)
+			case func(map[string]interface{}, *map[string]interface{}):
+				h(parameters.(map[string]interface{}), &safeContext)
+			// Controllers
+			case func() (interface{}, error):
+				tempResult, tempErr = h()
+			case func(interface{}) (interface{}, error):
+				tempResult, tempErr = h(parameters)
+			case func(interface{}, interface{}) (interface{}, error):
+				tempResult, tempErr = h(parameters, safeContext)
+			case func(map[string]interface{}) (interface{}, error):
+				tempResult, tempErr = h(parameters.(map[string]interface{}))
+			case func(map[string]interface{}, map[string]interface{}) (interface{}, error):
+				tempResult, tempErr = h(parameters.(map[string]interface{}), safeContext)
+			case func(map[string]interface{}, *map[string]interface{}) (interface{}, error):
+				tempResult, tempErr = h(parameters.(map[string]interface{}), &safeContext)
+			case func() (map[string]interface{}, error):
+				tempResult, tempErr = h()
+			case func(map[string]interface{}) (map[string]interface{}, error):
+				tempResult, tempErr = h(parameters.(map[string]interface{}))
+			case func(map[string]interface{}, map[string]interface{}) (map[string]interface{}, error):
+				tempResult, tempErr = h(parameters.(map[string]interface{}), safeContext)
+			case func(map[string]interface{}, *map[string]interface{}) (map[string]interface{}, error):
+				tempResult, tempErr = h(parameters.(map[string]interface{}), &safeContext)
+			// Afterware
+			case func(interface{}, interface{}, error):
+				h(parameters, safeContext, err)
+			case func(map[string]interface{}, map[string]interface{}, error):
+				h(parameters.(map[string]interface{}), safeContext, err)
+			case func(map[string]interface{}, *map[string]interface{}, error):
+				h(parameters.(map[string]interface{}), &safeContext, err)
+			default:
+				err = errors.New("Unsupported route handler function definition")
+			}
+			if tempErr != nil {
 				err = tempErr
-			} else {
-				if tempResult != nil {
+			} else if tempResult != nil {
+				if result == nil {
+					result = tempResult
+				} else {
 					err = errors.New("Middleware should not return anything but may mutate context")
 					break
 				}
 			}
 		}
-	case []func(interface{}, *map[string]interface{}) (interface{}, error):
-		for i, f := range h {
-			tempResult, tempErr := f(request.Parameters, &safeContext)
-			if i == len(h)-1 {
-				result = tempResult
-				err = tempErr
+
+		if timedOut {
+			return
+		}
+
+		if timer != nil {
+			timer.Stop()
+		}
+
+		if err != nil {
+			var statusCode int
+			if blestErr, ok := err.(*BlestError); ok {
+				statusCode = blestErr.StatusCode
 			} else {
-				if tempResult != nil {
-					err = errors.New("Middleware should not return anything but may mutate context")
-					break
+				statusCode = 500
+			}
+			resultChan <- [4]interface{}{id, route, nil, map[string]interface{}{"message": err.Error(), "statusCode": statusCode}}
+		} else if result != nil {
+			switch r := result.(type) {
+			case map[string]interface{}:
+				if selector != nil {
+					result = filterObject(r, selector)
 				}
+			default:
+				resultChan <- [4]interface{}{id, route, nil, map[string]interface{}{"message": "The result, if any, should be a JSON object", "statusCode": 500}}
 			}
+			resultChan <- [4]interface{}{id, route, result, nil}
+		} else {
+			resultChan <- [4]interface{}{id, route, nil, nil}
 		}
-	default:
-		err = errors.New("Route not found")
-	}
+	}()
 
-	if err != nil {
-		return [4]interface{}{request.ID, request.Route, nil, map[string]interface{}{"message": err.Error()}}, nil
-	}
-
-	if result != nil {
-		switch r := result.(type) {
-		case map[string]interface{}:
-			if request.Selector != nil {
-				result = filterObject(r, request.Selector)
-			}
-		default:
-			return [4]interface{}{request.ID, request.Route, nil, map[string]interface{}{"message": "The result, if any, should be a JSON object"}}, nil
-		}
-	}
-
-	return [4]interface{}{request.ID, request.Route, result, nil}, nil
+	return resultChan
 }
 
 func filterObject(obj map[string]interface{}, arr []interface{}) map[string]interface{} {

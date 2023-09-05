@@ -25,37 +25,22 @@ go get github.com/jhuntdev/blest-go
 
 ## Usage
 
-Use the `CreateRequestHandler` function to create a request handler suitable for use in an existing Python application. Use the `CreateHttpServer` function to create a standalone HTTP server for your request handler. Use the `CreateHttpClient` function to create a BLEST HTTP client.
-
-### CreateRequestHandler
-
-The following example uses Gin.
-<!-- , but you can find examples with other frameworks [here](examples). -->
+This default export of this library has an interface very similar to Gin. It also provides a `Router` struct with a `Handle` method for use in an existing NodeJS application and an `HttpClient` struct with a `Request` method for making BLEST HTTP requests.
 
 ```go
 package main
 
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
-	"net/http"
-
-	"github.com/gin-gonic/gin"
-	"github.com/jhundev/blest-go"
-)
+import "github.com/jhuntdev/blest-go"
 
 // Create some middleware (optional)
-func authMiddleware(params interface{}, context *map[string]interface{}) (interface{}, error) {
+func authMiddleware(params interface{}, context *map[string]interface{}) {
 	name, ok := params.(map[string]interface{})["name"].(string)
 	if !ok {
-		name = "Tarzan"
+		return nil, errors.New("Unauthorized")
 	}
 	(*context)["user"] = map[string]interface{}{
 		"name": name,
 	}
-	return nil, nil
 }
 
 // Create a route controller
@@ -75,19 +60,58 @@ func greetController(params interface{}, context *map[string]interface{}) (inter
 }
 
 func main() {
-// Set up a router
-	router := map[string]interface{}{
-		"greet": []func(interface{}, *map[string]interface{}) (interface{}, error){
-			authMiddleware,
-			greetController,
-		},
+	r := blest.Default()
+	r.Use(authMiddleware)
+	r.Route("greet", greetController)
+	r.Run() // listen and serve on 0.0.0.0:8080
+}
+```
+
+### Router
+
+```go
+package main
+
+import {
+	"github.com/jhuntdev/blest-go"
+	"github.com/gin-gonic/gin"
+}
+
+// Create some middleware (optional)
+func authMiddleware(params interface{}, context *map[string]interface{}) {
+	name, ok := params.(map[string]interface{})["name"].(string)
+	if !ok {
+		return nil, errors.New("Unauthorized")
 	}
+	(*context)["user"] = map[string]interface{}{
+		"name": name,
+	}
+}
 
-	// Create a request handler
-	requestHandler := blest.CreateRequestHandler(router, nil)
+// Create a route controller
+func greetController(params interface{}, context *map[string]interface{}) (interface{}, error) {
+	user, ok := (*context)["user"].(map[string]interface{})
+	if !ok {
+		return nil, errors.New("user not found or has an invalid type")
+	}
+	name, ok := user["name"].(string)
+	if !ok {
+		return nil, errors.New("name not found or has an invalid type")
+	}
+	greeting := fmt.Sprintf("Hi, %v!", name)
+	return map[string]interface{}{
+		"greeting": greeting,
+	}, nil
+}
 
-	// Create a Gin POST requst handler
-	handlePostRequest := func(c *gin.Context) {
+// Create your router
+router := blest.Router()
+router.Use(authMiddleware)
+router.Route("greet", greetController)
+
+func main() {
+	r := gin.Default()
+	r.POST("/", func(c *gin.Context) {
 		var req gin.Request
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{
@@ -95,126 +119,19 @@ func main() {
 			})
 			return
 		}
-
-		// Use the request handler
-		response := requestHandler(req.Data, nil)
-		result, ok1 := response[0].([][4]interface{})
-		reqErr, ok2 := response[1].(map[string]interface{})
-		if ok2 && reqErr != nil {
-			log.Println(reqErr["message"])
-			statusCode, ok3 := reqErr["code"].(int)
-			if !ok3 {
-				statusCode = 500
-			}
-			c.String(statusCode, reqErr["message"])
-			return
-		} else if !ok1 {
-			c.String(http.StatusInternalServerError, "Request handler returned an improperly formatted response")
-			return
+		// Use the router
+		response, e := router.Handle(req.Data, nil)
+		if e !== nil {
+			c.JSON(500, e)
 		} else {
-			json, err := json.Marshal(result)
-			if err != nil {
-				c.String(http.StatusInternalServerError, err.Error())
-			} else {
-				c.JSON(http.StatusOK, string(json))
-			}
+			c.JSON(200, response)
 		}
-	}
-
-	// Create a new Gin router
-	app := gin.Default()
-
-	// Enable CORS middleware
-	app.Use(corsMiddleware())
-
-	// Define the route handlers
-	app.OPTIONS("/", handleOptionsRequest)
-	app.POST("/", handlePostRequest)
-
-	// Start the server
-	app.Run(":8080")
-}
-
-// CORS middleware to enable CORS headers
-func corsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type")
-		c.Next()
-	}
-}
-
-// Handler for OPTIONS requests on "/"
-func handleOptionsRequest(c *gin.Context) {
-	c.AbortWithStatus(http.StatusNoContent)
+	})
+	r.Run() // listen and serve on 0.0.0.0:8080
 }
 ```
 
-### CreateHttpServer
-
-```go
-package main
-
-import (
-	"errors"
-	"fmt"
-
-	"github.com/jhuntdev/blest-go"
-)
-
-func main() {
-
-  // Create some middleware (optional)
-  authMiddleware := func(params interface{}, context *map[string]interface{}) (interface{}, error) {
-    name, ok := params.(map[string]interface{})["name"].(string)
-    if !ok {
-      name = "Tarzan"
-    }
-    (*context)["user"] = map[string]interface{}{
-      "name": name,
-    }
-    return nil, nil
-  }
-
-  // Create a route controller
-  greetController := func(params interface{}, context *map[string]interface{}) (interface{}, error) {
-    user, ok := (*context)["user"].(map[string]interface{})
-    if !ok {
-      return nil, errors.New("user not found or has an invalid type")
-    }
-    name, ok := user["name"].(string)
-    if !ok {
-      return nil, errors.New("name not found or has an invalid type")
-    }
-    greeting := fmt.Sprintf("Hi, %v!", name)
-    return map[string]interface{}{
-      "greeting": greeting,
-    }, nil
-  }
-
-  // Set up a router
-  router := map[string]interface{}{
-		"greet": []func(interface{}, *map[string]interface{}) (interface{}, error){
-			authMiddleware,
-      greetController
-    }
-	}
-
-  // Create a request handler
-	requestHandler := blest.CreateRequestHandler(router, nil)
-
-  // Ceate the server
-	server := blest.CreateHTTPServer(requestHandler, map[string]interface{}{
-    "port": 8080
-  })
-
-  // Listen for requests
-	log.Fatal(server.ListenAndServe())
-}
-```
-
-### createHttpClient
+### HttpClient
 
 ```go
 package main
@@ -229,21 +146,21 @@ import (
 )
 
 func main() {
-
 	// Set headers (optional)
 	headers := map[string]string{
 		"Authorization": "Bearer token",
 	}
 
 	// Create a client
-	request := blest.CreateHttpClient("http://localhost:8080", map[string]interface{}{"headers": headers})
+	client := blest.NewHttpClient("http://localhost:8080", map[string]interface{}{"headers": headers})
 	
 	// Send a request
-	result, err := request("greet", map[string]interface{}{ "name": "Steve" }, []interface{}{ "greeting" })
+	result, err := client.Request("greet", map[string]interface{}{ "name": "Steve" }, []interface{}{ "greeting" })
 	if err != nil {
 		// Do something in case of error
+	} else {
+		// Do something with the result
 	}
-	// Do something with the result
 }
 ```
 
