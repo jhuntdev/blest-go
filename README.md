@@ -2,7 +2,7 @@
 
 The Go reference implementation of BLEST (Batch-able, Lightweight, Encrypted State Transfer), an improved communication protocol for web APIs which leverages JSON, supports request batching and selective returns, and provides a modern alternative to REST. It includes an example for Gin.
 
-To learn more about BLEST, please refer to the white paper: https://jhunt.dev/BLEST%20White%20Paper.pdf
+To learn more about BLEST, please visit the website: https://blest.jhunt.dev
 
 For a front-end implementation in React, please visit https://github.com/jhuntdev/blest-react
 
