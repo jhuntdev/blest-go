@@ -18,11 +18,15 @@ import (
 
 type RequestHandler func(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{})
 
-type RequestObject struct {
+type requestObject struct {
 	ID         string
 	Route      string
 	Parameters interface{}
 	Selector   []interface{}
+}
+
+type eventEmitter struct {
+	events map[string][]chan interface{}
 }
 
 type Router struct {
@@ -389,7 +393,7 @@ func Default(options map[string]interface{}) *Router {
 }
 
 func (r *Router) Run() {
-	server := HttpServer(r.Handle, r.Options)
+	server := NewHttpServer(r.Handle, r.Options)
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -468,7 +472,7 @@ func constructHttpHeaders(options map[string]interface{}) map[string]string {
 	return httpHeaders
 }
 
-func HttpServer(requestHandler RequestHandler, args ...interface{}) *http.Server {
+func NewHttpServer(requestHandler RequestHandler, args ...interface{}) *http.Server {
 
 	var options map[string]interface{}
 
@@ -614,18 +618,14 @@ func httpPostRequest(url string, data interface{}, headers map[string]string) []
 	return result
 }
 
-type EventEmitter struct {
-	events map[string][]chan interface{}
-}
-
-func (e *EventEmitter) on(event string, ch chan interface{}) {
+func (e *eventEmitter) on(event string, ch chan interface{}) {
 	if e.events == nil {
 		e.events = make(map[string][]chan interface{})
 	}
 	e.events[event] = append(e.events[event], ch)
 }
 
-func (e *EventEmitter) once(event string, ch chan interface{}) {
+func (e *eventEmitter) once(event string, ch chan interface{}) {
 	chOnce := make(chan interface{}, 1)
 	e.on(event, chOnce)
 	go func() {
@@ -638,7 +638,7 @@ func (e *EventEmitter) once(event string, ch chan interface{}) {
 	}()
 }
 
-func (e *EventEmitter) emit(event string, args ...interface{}) {
+func (e *eventEmitter) emit(event string, args ...interface{}) {
 	channels := e.events[event]
 	if channels == nil {
 		return
@@ -650,7 +650,7 @@ func (e *EventEmitter) emit(event string, args ...interface{}) {
 	}
 }
 
-func (e *EventEmitter) off(event string, ch chan interface{}) {
+func (e *eventEmitter) off(event string, ch chan interface{}) {
 	if channels := e.events[event]; channels != nil {
 		for i, c := range channels {
 			if c == ch {
@@ -677,7 +677,7 @@ func NewHttpClient(url string, args ...interface{}) *HttpClient {
 	maxBatchSize := 100
 	queue := [][]interface{}{}
 	timeout := new(time.Timer)
-	emitter := &EventEmitter{}
+	emitter := &eventEmitter{}
 	timeout = nil
 	client := &HttpClient{
 		Url:          url,
@@ -883,17 +883,17 @@ func (c *HttpClient) Request(route string, args ...interface{}) (map[string]inte
 // 	return request
 // }
 
-func CreateRequestHandler(routes map[string]Route, options map[string]interface{}) RequestHandler {
-	if options != nil {
-		fmt.Println("The \"options\" argument is not yet used, but may be used in the future")
-	}
+// func createRequestHandler(routes map[string]Route, options map[string]interface{}) RequestHandler {
+// 	if options != nil {
+// 		fmt.Println("The \"options\" argument is not yet used, but may be used in the future")
+// 	}
 
-	handler := func(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{}) {
-		return handleRequest(routes, requests, context)
-	}
+// 	handler := func(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{}) {
+// 		return handleRequest(routes, requests, context)
+// 	}
 
-	return handler
-}
+// 	return handler
+// }
 
 func handleRequest(routes map[string]Route, requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{}) {
 	if routes == nil {
@@ -952,7 +952,7 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 			routeHandler = []interface{}{routeNotFound}
 		}
 
-		requestObject := RequestObject{
+		requestObject := requestObject{
 			ID:         id,
 			Route:      route,
 			Parameters: parameters,
@@ -994,7 +994,7 @@ func routeNotFound() (map[string]interface{}, error) {
 	return nil, NewBlestError("Not Found", 404, "NOT_FOUND")
 }
 
-func routeReducer(handler []interface{}, request RequestObject, context map[string]interface{}, timeout int) <-chan [4]interface{} {
+func routeReducer(handler []interface{}, request requestObject, context map[string]interface{}, timeout int) <-chan [4]interface{} {
 	resultChan := make(chan [4]interface{})
 
 	go func() {
