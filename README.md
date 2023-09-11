@@ -25,7 +25,7 @@ go get github.com/jhuntdev/blest-go
 
 ## Usage
 
-This default export of this library has an interface very similar to Gin. It also provides a `Router` struct with a `Handle` method for use in an existing NodeJS application and an `HttpClient` struct with a `Request` method for making BLEST HTTP requests.
+The `Default` struct of this library has an interface similar to Gin. It also provides a `Router` struct with a `Handle` method for use in an existing NodeJS application and an `HttpClient` struct with a `Request` method for making BLEST HTTP requests.
 
 ```go
 package main
