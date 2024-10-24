@@ -21,8 +21,8 @@ type RequestHandler func(requests [][]interface{}, context map[string]interface{
 type requestObject struct {
 	ID         string
 	Route      string
-	Parameters interface{}
-	Selector   []interface{}
+	Body 	   interface{}
+	Headers    interface{}
 }
 
 type eventEmitter struct {
@@ -41,8 +41,7 @@ type Router struct {
 type Route struct {
 	Handler     []interface{}
 	Description string
-	Parameters  interface{}
-	Result      interface{}
+	Schema      interface{}
 	Visible     bool
 	Validate    bool
 	Timeout     int
@@ -51,7 +50,7 @@ type Route struct {
 type HttpClient struct {
 	Url          string
 	Options      map[string]interface{}
-	Headers      map[string]string
+	HttpHeaders  map[string]string
 	MaxBatchSize int
 	Queue        [][]interface{}
 	Timeout      *time.Timer
@@ -65,16 +64,26 @@ type BlestError struct {
 }
 
 var routeRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-/]*[a-zA-Z0-9]$`)
+var systemRouteRegex = regexp.MustCompile(`^_[a-zA-Z][a-zA-Z0-9_\-/]*[a-zA-Z0-9]$`)
 
-func validateRoute(route string) string {
+func validateRoute(route string, system boolean) string {
 	if route == "" {
 		return "Route is required"
-	} else if !routeRegex.MatchString(route) {
+	} else if system && !systemRouteRegex.MatchString(route) {
+		routeLength := len(route)
+		if routeLength < 3 {
+			return "System route should be at least three characters long"
+		} else if route[0] != '_' {
+			return "System route should start with an underscore"
+		} else if !isLetterOrNumber(route[routeLength-1]) {
+			return "System route should end with a letter or a number"
+		} else {
+			return "System route should contain only letters, numbers, dashes, underscores, and forward slashes"
+		}
+	} else if !system && !routeRegex.MatchString(route) {
 		routeLength := len(route)
 		if routeLength < 2 {
 			return "Route should be at least two characters long"
-		} else if route[routeLength-1] == '/' {
-			return "Route should not end in a forward slash"
 		} else if !isLetter(route[0]) {
 			return "Route should start with a letter"
 		} else if !isLetterOrNumber(route[routeLength-1]) {
@@ -229,8 +238,7 @@ func (r *Router) Route(route string, args ...interface{}) {
 	r.Routes[route] = Route{
 		Handler:     append(append([]interface{}{}, r.Middleware...), handlers...),
 		Description: "",
-		Parameters:  nil,
-		Result:      nil,
+		Schema:      nil,
 		Visible:     r.Introspection,
 		Validate:    false,
 		Timeout:     r.Timeout,
@@ -255,12 +263,8 @@ func (r *Router) Describe(route string, config map[string]interface{}) error {
 		routeInfo.Description = description
 	}
 
-	if parameters, ok := config["parameters"].(map[string]interface{}); ok {
-		routeInfo.Parameters = parameters
-	}
-
-	if result, ok := config["result"].(map[string]interface{}); ok {
-		routeInfo.Result = result
+	if schema, ok := config["schema"].(map[string]interface{}); ok {
+		routeInfo.Schema = schema
 	}
 
 	if visible, ok := config["visible"].(bool); ok {
@@ -313,8 +317,7 @@ func (r *Router) Merge(router *Router) error {
 			r.Routes[route] = Route{
 				Handler:     append(append(append([]interface{}{}, r.Middleware...), router.Routes[route].Handler...), r.Afterware...),
 				Description: router.Routes[route].Description,
-				Parameters:  router.Routes[route].Parameters,
-				Result:      router.Routes[route].Result,
+				Schema:      router.Routes[route].Schema,
 				Visible:     router.Routes[route].Visible,
 				Validate:    router.Routes[route].Validate,
 				Timeout:     timeout,
@@ -372,8 +375,7 @@ func (r *Router) Namespace(prefix string, router *Router) error {
 			r.Routes[nsRoute] = Route{
 				Handler:     append(append(append([]interface{}{}, r.Middleware...), router.Routes[route].Handler...), r.Afterware...),
 				Description: router.Routes[route].Description,
-				Parameters:  router.Routes[route].Parameters,
-				Result:      router.Routes[route].Result,
+				Schema:      router.Routes[route].Schema,
 				Visible:     router.Routes[route].Visible,
 				Validate:    router.Routes[route].Validate,
 				Timeout:     timeout,
@@ -663,14 +665,14 @@ func (e *eventEmitter) off(event string, ch chan interface{}) {
 
 func NewHttpClient(url string, args ...interface{}) *HttpClient {
 	var options map[string]interface{}
-	var headers map[string]string
+	var httpHeaders map[string]string
 	if len(args) > 0 {
 		o, oOk := args[0].(map[string]interface{})
 		if oOk && o != nil {
 			options = o
-			h, hOk := o["headers"].(map[string]string)
+			h, hOk := o["httpHeaders"].(map[string]string)
 			if hOk && h != nil {
-				headers = h
+				httpHeaders = h
 			}
 		}
 	}
@@ -682,7 +684,7 @@ func NewHttpClient(url string, args ...interface{}) *HttpClient {
 	client := &HttpClient{
 		Url:          url,
 		Options:      options,
-		Headers:      headers,
+		HttpHeaders:  httpHeaders,
 		MaxBatchSize: maxBatchSize,
 		Queue:        queue,
 		Timeout:      timeout,
@@ -700,7 +702,7 @@ func (c *HttpClient) Process() {
 	} else {
 		c.Timeout.Reset(1 * time.Millisecond)
 	}
-	data := httpPostRequest(c.Url, newQueue, c.Headers)
+	data := httpPostRequest(c.Url, newQueue, c.HttpHeaders)
 	for _, r := range data {
 		c.Emitter.emit(r[0].(string), r[2], r[3])
 	}
@@ -718,28 +720,28 @@ func (c *HttpClient) Request(route string, args ...interface{}) (map[string]inte
 		return nil, errors.New("Route is required")
 	}
 
-	var parameters map[string]interface{}
+	var body map[string]interface{}
 	if len(args) > 0 {
-		p, ok := args[0].(map[string]interface{})
-		if !ok && p != nil {
-			return nil, errors.New("Parameters should be a map")
+		b, ok := args[0].(map[string]interface{})
+		if !ok && b != nil {
+			return nil, errors.New("Body should be a map")
 		}
-		parameters = p
+		body = b
 	}
 
-	var selector []interface{}
-	if len(args) > 1 {
-		s, ok := args[1].([]interface{})
-		if !ok && s != nil {
-			return nil, errors.New("Selector should be a slice")
+	var headers map[string]interface{}
+	if len(args) > 0 {
+		h, ok := args[1].(map[string]interface{})
+		if !ok && h != nil {
+			return nil, errors.New("Headers should be a map")
 		}
-		selector = s
+		headers = h
 	}
 
 	id := uuid.New().String()
 	ch := make(chan interface{}, 1)
 	c.Emitter.once(id, ch)
-	c.Queue = append(c.Queue, []interface{}{id, route, parameters, selector})
+	c.Queue = append(c.Queue, []interface{}{id, route, body, headers})
 	if c.Timeout == nil {
 		c.Timeout = time.AfterFunc(1*time.Millisecond, c.Process)
 	}
@@ -799,18 +801,19 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 			return handleError(400, "Request item should have a route")
 		}
 
-		var parameters map[string]interface{}
+		var body map[string]interface{}
 		if len(request) > 2 {
-			p, ok := request[2].(map[string]interface{})
+			b, ok := request[2].(map[string]interface{})
 			if ok {
-				parameters = p
+				body = b
 			}
 		}
-		var selector []interface{}
+		
+		var headers map[string]interface{}
 		if len(request) > 3 {
-			s, ok := request[3].([]interface{})
+			h, ok := request[3].(map[string]interface{})
 			if ok {
-				selector = s
+				headers = h
 			}
 		}
 
@@ -834,21 +837,20 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 		requestObject := requestObject{
 			ID:         id,
 			Route:      route,
-			Parameters: parameters,
-			Selector:   selector,
+			Body:		body,
+			Headers: 	headers
 		}
 
-		myContext := map[string]interface{}{
-			"requestId":   id,
-			"routeName":   route,
-			"selector":    selector,
-			"requestTime": time.Now().UnixNano() / int64(time.Millisecond),
-		}
+		requestContext := map[string]interface{}{}
 		for key, value := range context {
-			myContext[key] = value
+			requestContext[key] = value
 		}
-
-		resultChan := routeReducer(routeHandler, requestObject, myContext, timeout)
+		requestContext.id = id
+		requestContext.route = route
+		requestContext.headers = headers
+		requestContext.time = time.Now().UnixNano() / int64(time.Millisecond)
+		
+		resultChan := routeReducer(routeHandler, requestObject, requestContext, timeout)
 		// if err != nil {
 		// 	return handleError(500, err.Error())
 		// }
@@ -881,7 +883,7 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 
 		var timer *time.Timer
 		var timedOut bool
-		id, route, parameters, selector := request.ID, request.Route, request.Parameters, request.Selector
+		id, route, body := request.ID, request.Route, request.Body
 
 		if timeout > 0 {
 			timer = time.AfterFunc(time.Duration(timeout)*time.Millisecond, func() {
@@ -910,43 +912,43 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 			case func():
 				h()
 			case func(interface{}):
-				h(parameters)
+				h(body)
 			case func(interface{}, interface{}):
-				h(parameters, safeContext)
+				h(body, safeContext)
 			case func(map[string]interface{}):
-				h(parameters.(map[string]interface{}))
+				h(body.(map[string]interface{}))
 			case func(map[string]interface{}, map[string]interface{}):
-				h(parameters.(map[string]interface{}), safeContext)
+				h(body.(map[string]interface{}), safeContext)
 			case func(map[string]interface{}, *map[string]interface{}):
-				h(parameters.(map[string]interface{}), &safeContext)
+				h(body.(map[string]interface{}), &safeContext)
 			// Controllers
 			case func() (interface{}, error):
 				tempResult, tempErr = h()
 			case func(interface{}) (interface{}, error):
-				tempResult, tempErr = h(parameters)
+				tempResult, tempErr = h(body)
 			case func(interface{}, interface{}) (interface{}, error):
-				tempResult, tempErr = h(parameters, safeContext)
+				tempResult, tempErr = h(body, safeContext)
 			case func(map[string]interface{}) (interface{}, error):
-				tempResult, tempErr = h(parameters.(map[string]interface{}))
+				tempResult, tempErr = h(body.(map[string]interface{}))
 			case func(map[string]interface{}, map[string]interface{}) (interface{}, error):
-				tempResult, tempErr = h(parameters.(map[string]interface{}), safeContext)
+				tempResult, tempErr = h(body.(map[string]interface{}), safeContext)
 			case func(map[string]interface{}, *map[string]interface{}) (interface{}, error):
-				tempResult, tempErr = h(parameters.(map[string]interface{}), &safeContext)
+				tempResult, tempErr = h(body.(map[string]interface{}), &safeContext)
 			case func() (map[string]interface{}, error):
 				tempResult, tempErr = h()
 			case func(map[string]interface{}) (map[string]interface{}, error):
-				tempResult, tempErr = h(parameters.(map[string]interface{}))
+				tempResult, tempErr = h(body.(map[string]interface{}))
 			case func(map[string]interface{}, map[string]interface{}) (map[string]interface{}, error):
-				tempResult, tempErr = h(parameters.(map[string]interface{}), safeContext)
+				tempResult, tempErr = h(body.(map[string]interface{}), safeContext)
 			case func(map[string]interface{}, *map[string]interface{}) (map[string]interface{}, error):
-				tempResult, tempErr = h(parameters.(map[string]interface{}), &safeContext)
+				tempResult, tempErr = h(body.(map[string]interface{}), &safeContext)
 			// Afterware
 			case func(interface{}, interface{}, error):
-				h(parameters, safeContext, err)
+				h(body, safeContext, err)
 			case func(map[string]interface{}, map[string]interface{}, error):
-				h(parameters.(map[string]interface{}), safeContext, err)
+				h(body.(map[string]interface{}), safeContext, err)
 			case func(map[string]interface{}, *map[string]interface{}, error):
-				h(parameters.(map[string]interface{}), &safeContext, err)
+				h(body.(map[string]interface{}), &safeContext, err)
 			default:
 				err = errors.New("Unsupported route handler function definition")
 			}

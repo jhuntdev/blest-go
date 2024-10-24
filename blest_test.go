@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func dummyController(parameters map[string]interface{}, context *map[string]interface{}) (interface{}, error) {
+func dummyController(body map[string]interface{}, context *map[string]interface{}) (interface{}, error) {
 	return map[string]interface{}{"hello": "world"}, nil
 }
 
@@ -29,25 +29,25 @@ func TestRouter(t *testing.T) {
 		error1, error2, error3, error4, error5                     map[string]interface{}
 	)
 
-	router.Route("basicRoute", func(parameters map[string]interface{}, context *map[string]interface{}) (interface{}, error) {
+	router.Route("basicRoute", func(body map[string]interface{}, context *map[string]interface{}) (interface{}, error) {
 		myContext := make(map[string]interface{})
 		for key, value := range *context {
 			myContext[key] = value
 		}
 		return map[string]interface{}{
 			"route":      "basicRoute",
-			"parameters": parameters,
+			"body":       body,
 			"context":    myContext,
 		}, nil
 	})
 
-	router.Use(func(parameters map[string]interface{}, context *map[string]interface{}) {
+	router.Use(func(body map[string]interface{}, context *map[string]interface{}) {
 		(*context)["test"] = map[string]interface{}{
-			"value": parameters["testValue"],
+			"value": body["testValue"],
 		}
 	})
 
-	router.Use(func(parameters map[string]interface{}, context *map[string]interface{}, err error) {
+	router.Use(func(body map[string]interface{}, context *map[string]interface{}, err error) {
 		completeTime := time.Now().UnixNano()
 		requestTime := (*context)["requestTime"].(int64)
 		difference := completeTime - requestTime
@@ -56,30 +56,30 @@ func TestRouter(t *testing.T) {
 	})
 
 	router2 := NewRouter(map[string]interface{}{"timeout": 10})
-	router2.Route("mergedRoute", func(parameters map[string]interface{}, context *map[string]interface{}) (interface{}, error) {
+	router2.Route("mergedRoute", func(body map[string]interface{}, context *map[string]interface{}) (interface{}, error) {
 		myContext := make(map[string]interface{})
 		for key, value := range *context {
 			myContext[key] = value
 		}
 		return map[string]interface{}{
 			"route":      "mergedRoute",
-			"parameters": parameters,
+			"body":       body,
 			"context":    myContext,
 		}, nil
 	})
 
-	router2.Route("timeoutRoute", func(parameters map[string]interface{}) (interface{}, error) {
+	router2.Route("timeoutRoute", func(body map[string]interface{}) (interface{}, error) {
 		time.Sleep(20 * time.Millisecond)
 		result := make(map[string]interface{})
-		result["testValue"] = parameters["testValue"]
+		result["testValue"] = body["testValue"]
 		return result, nil
 	})
 
 	router.Merge(router2)
 
 	router3 := NewRouter()
-	router3.Route("errorRoute", func(parameters map[string]interface{}) (interface{}, error) {
-		errorMessage := parameters["testValue"].(float64)
+	router3.Route("errorRoute", func(body map[string]interface{}) (interface{}, error) {
+		errorMessage := body["testValue"].(float64)
 		errorCode := "ERROR_" + strconv.Itoa(int(math.Round(errorMessage*10)))
 		return nil, errors.New(errorCode)
 	})
@@ -134,11 +134,11 @@ func TestRouter(t *testing.T) {
 
 	assert.Equal(t, testID1, result1[0][0].(string))
 	assert.Equal(t, "basicRoute", result1[0][1].(string))
-	assert.InDelta(t, testValue1, result1[0][2].(map[string]interface{})["parameters"].(map[string]interface{})["testValue"].(float64), 1e-6)
+	assert.InDelta(t, testValue1, result1[0][2].(map[string]interface{})["body"].(map[string]interface{})["testValue"].(float64), 1e-6)
 
 	assert.Equal(t, testID2, result2[0][0].(string))
 	assert.Equal(t, "mergedRoute", result2[0][1].(string))
-	assert.InDelta(t, testValue2, result2[0][2].(map[string]interface{})["parameters"].(map[string]interface{})["testValue"].(float64), 1e-6)
+	assert.InDelta(t, testValue2, result2[0][2].(map[string]interface{})["body"].(map[string]interface{})["testValue"].(float64), 1e-6)
 	assert.InDelta(t, testValue2, result2[0][2].(map[string]interface{})["context"].(map[string]interface{})["test"].(map[string]interface{})["value"].(float64), 1e-6)
 
 	assert.Equal(t, testID3, result3[0][0].(string))

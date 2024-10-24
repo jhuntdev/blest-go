@@ -1,6 +1,6 @@
 # BLEST Go
 
-The Go reference implementation of BLEST (Batch-able, Lightweight, Encrypted State Transfer), an improved communication protocol for web APIs which leverages JSON, supports request batching and selective returns, and provides a modern alternative to REST. It includes an example for Gin.
+The Go reference implementation of BLEST (Batch-able, Lightweight, Encrypted State Transfer), an improved communication protocol for web APIs which leverages JSON, supports request batching by default, and provides a modern alternative to REST. It includes an example for Gin.
 
 To learn more about BLEST, please visit the website: https://blest.jhunt.dev
 
@@ -10,8 +10,7 @@ For a front-end implementation in React, please visit https://github.com/jhuntde
 
 - Built on JSON - Reduce parsing time and overhead
 - Request Batching - Save bandwidth and reduce load times
-- Compact Payloads - Save more bandwidth
-- Selective Returns - Save even more bandwidth
+- Compact Payloads - Save even more bandwidth
 - Single Endpoint - Reduce complexity and improve data privacy
 - Fully Encrypted - Improve data privacy
 
@@ -33,23 +32,19 @@ package main
 import "github.com/jhuntdev/blest-go"
 
 // Create some middleware (optional)
-func authMiddleware(params interface{}, context *map[string]interface{}) {
-	name, ok := params.(map[string]interface{})["name"].(string)
-	if !ok {
+func authMiddleware(body interface{}, context *map[string]interface{}) {
+	headers, ok := context.(map[string]interface{})["headers"].(map[string]interface{})
+	if !ok || headers["auth"] != "myToken" {
 		return nil, errors.New("Unauthorized")
 	}
 	(*context)["user"] = map[string]interface{}{
-		"name": name,
+		// user info for example
 	}
 }
 
 // Create a route controller
-func greetController(params interface{}, context *map[string]interface{}) (interface{}, error) {
-	user, ok := (*context)["user"].(map[string]interface{})
-	if !ok {
-		return nil, errors.New("user not found or has an invalid type")
-	}
-	name, ok := user["name"].(string)
+func greetController(body interface{}, context *map[string]interface{}) (interface{}, error) {
+	name, ok := body["name"].(string)
 	if !ok {
 		return nil, errors.New("name not found or has an invalid type")
 	}
@@ -78,9 +73,9 @@ import {
 }
 
 // Create some middleware (optional)
-func authMiddleware(params interface{}, context *map[string]interface{}) {
-	name, ok := params.(map[string]interface{})["name"].(string)
-	if !ok {
+func authMiddleware(body interface{}, context *map[string]interface{}) {
+	headers, ok := context.(map[string]interface{})["headers"].(map[string]interface{})
+	if !ok || headers["auth"] !== "myToken" {
 		return nil, errors.New("Unauthorized")
 	}
 	(*context)["user"] = map[string]interface{}{
@@ -89,7 +84,7 @@ func authMiddleware(params interface{}, context *map[string]interface{}) {
 }
 
 // Create a route controller
-func greetController(params interface{}, context *map[string]interface{}) (interface{}, error) {
+func greetController(body interface{}, context *map[string]interface{}) (interface{}, error) {
 	user, ok := (*context)["user"].(map[string]interface{})
 	if !ok {
 		return nil, errors.New("user not found or has an invalid type")
@@ -147,15 +142,15 @@ import (
 
 func main() {
 	// Set headers (optional)
-	headers := map[string]string{
+	httpHeaders := map[string]string{
 		"Authorization": "Bearer token",
 	}
 
 	// Create a client
-	client := blest.NewHttpClient("http://localhost:8080", map[string]interface{}{"headers": headers})
+	client := blest.NewHttpClient("http://localhost:8080", map[string]interface{}{"httpHeaders": httpHeaders})
 	
 	// Send a request
-	result, err := client.Request("greet", map[string]interface{}{ "name": "Steve" }, []interface{}{ "greeting" })
+	result, err := client.Request("greet", map[string]interface{}{ "name": "Steve" }, map[string]interface{}{"auth": "myToken"})
 	if err != nil {
 		// Do something in case of error
 	} else {
