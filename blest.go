@@ -783,6 +783,7 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 		return handleError(400, "Request body should be a JSON array")
 	}
 
+	batchId string = uuid.New().String()
 	uniqueIds := make(map[string]bool)
 	var results [][4]interface{}
 
@@ -845,10 +846,10 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 		for key, value := range context {
 			requestContext[key] = value
 		}
-		requestContext.id = id
+		requestContext.batchId = batchId
+		requestContext.requestId = id
 		requestContext.route = route
 		requestContext.headers = headers
-		requestContext.time = time.Now().UnixNano() / int64(time.Millisecond)
 		
 		resultChan := routeReducer(routeHandler, requestObject, requestContext, timeout)
 		// if err != nil {
