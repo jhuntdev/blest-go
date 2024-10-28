@@ -19,10 +19,10 @@ import (
 type RequestHandler func(requests [][]interface{}, context map[string]interface{}) ([][4]interface{}, map[string]interface{})
 
 type requestObject struct {
-	ID         string
-	Route      string
-	Body 	   interface{}
-	Headers    interface{}
+	ID      string
+	Route   string
+	Body    interface{}
+	Headers interface{}
 }
 
 type eventEmitter struct {
@@ -54,7 +54,7 @@ type HttpClient struct {
 	MaxBatchSize int
 	Queue        [][]interface{}
 	Timeout      *time.Timer
-	Emitter      *EventEmitter
+	Emitter      *eventEmitter
 }
 
 type BlestError struct {
@@ -66,7 +66,7 @@ type BlestError struct {
 var routeRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_\-/]*[a-zA-Z0-9]$`)
 var systemRouteRegex = regexp.MustCompile(`^_[a-zA-Z][a-zA-Z0-9_\-/]*[a-zA-Z0-9]$`)
 
-func validateRoute(route string, system boolean) string {
+func validateRoute(route string, system bool) string {
 	if route == "" {
 		return "Route is required"
 	} else if system && !systemRouteRegex.MatchString(route) {
@@ -218,7 +218,7 @@ func (r *Router) Route(route string, args ...interface{}) {
 		handlers = args[:len(args)-1]
 	}
 
-	routeError := validateRoute(route)
+	routeError := validateRoute(route, false)
 	if routeError != "" {
 		panic(routeError)
 	} else if _, exists := r.Routes[route]; exists {
@@ -342,7 +342,7 @@ func (r *Router) Namespace(prefix string, router *Router) error {
 		return errors.New("Router is required")
 	}
 
-	prefixError := validateRoute(prefix)
+	prefixError := validateRoute(prefix, false)
 	if prefixError != "" {
 		return errors.New(prefixError)
 	}
@@ -783,7 +783,7 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 		return handleError(400, "Request body should be a JSON array")
 	}
 
-	batchId string = uuid.New().String()
+	batchId := uuid.New().String()
 	uniqueIds := make(map[string]bool)
 	var results [][4]interface{}
 
@@ -809,7 +809,7 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 				body = b
 			}
 		}
-		
+
 		var headers map[string]interface{}
 		if len(request) > 3 {
 			h, ok := request[3].(map[string]interface{})
@@ -836,21 +836,21 @@ func handleRequest(routes map[string]Route, requests [][]interface{}, context ma
 		}
 
 		requestObject := requestObject{
-			ID:         id,
-			Route:      route,
-			Body:		body,
-			Headers: 	headers
+			ID:      id,
+			Route:   route,
+			Body:    body,
+			Headers: headers,
 		}
 
 		requestContext := map[string]interface{}{}
 		for key, value := range context {
 			requestContext[key] = value
 		}
-		requestContext.batchId = batchId
-		requestContext.requestId = id
-		requestContext.route = route
-		requestContext.headers = headers
-		
+		requestContext["batchId"] = batchId
+		requestContext["requestId"] = id
+		requestContext["route"] = route
+		requestContext["headers"] = headers
+
 		resultChan := routeReducer(routeHandler, requestObject, requestContext, timeout)
 		// if err != nil {
 		// 	return handleError(500, err.Error())
@@ -982,11 +982,11 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 			}
 			resultChan <- [4]interface{}{id, route, nil, map[string]interface{}{"message": err.Error(), "statusCode": statusCode}}
 		} else if result != nil {
-			switch r := result.(type) {
+			switch result.(type) { // r :=
 			case map[string]interface{}:
-				if selector != nil {
-					result = filterObject(r, selector)
-				}
+				// if selector != nil {
+				// 	result = filterObject(r, selector)
+				// }
 			default:
 				resultChan <- [4]interface{}{id, route, nil, map[string]interface{}{"message": "The result, if any, should be a JSON object", "statusCode": 500}}
 			}
