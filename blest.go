@@ -252,11 +252,11 @@ func (r *Router) Route(route string, args ...interface{}) {
 func (r *Router) Describe(route string, config map[string]interface{}) error {
 	routeInfo, exists := r.Routes[route]
 	if !exists {
-		return errors.New("Route does not exist")
+		return errors.New("route does not exist")
 	}
 
 	if config == nil || reflect.TypeOf(config).Kind() != reflect.Map {
-		return errors.New("Configuration should be a map")
+		return errors.New("configuration should be a map")
 	}
 
 	if description, ok := config["description"].(string); ok {
@@ -277,7 +277,7 @@ func (r *Router) Describe(route string, config map[string]interface{}) error {
 
 	if timeout, ok := config["timeout"].(float64); ok {
 		if timeout <= 0 || timeout != float64(int(timeout)) {
-			return errors.New("Timeout should be a positive integer")
+			return errors.New("timeout should be a positive integer")
 		}
 		routeInfo.Timeout = int(timeout)
 	}
@@ -301,7 +301,7 @@ func (r *Router) Merge(router *Router) error {
 	}
 
 	if len(newRoutes) == 0 {
-		return errors.New("No routes to merge")
+		return errors.New("no routes to merge")
 	}
 
 	for _, route := range newRoutes {
@@ -358,7 +358,7 @@ func (r *Router) Namespace(prefix string, router *Router) error {
 	}
 
 	if len(newRoutes) == 0 {
-		return errors.New("No routes to namespace")
+		return errors.New("no routes to namespace")
 	}
 
 	for _, route := range newRoutes {
@@ -717,14 +717,14 @@ func min(a, b int) int {
 
 func (c *HttpClient) Request(route string, args ...interface{}) (map[string]interface{}, error) {
 	if route == "" {
-		return nil, errors.New("Route is required")
+		return nil, errors.New("route is required")
 	}
 
 	var body map[string]interface{}
 	if len(args) > 0 {
 		b, ok := args[0].(map[string]interface{})
 		if !ok && b != nil {
-			return nil, errors.New("Body should be a map")
+			return nil, errors.New("body should be a map")
 		}
 		body = b
 	}
@@ -733,7 +733,7 @@ func (c *HttpClient) Request(route string, args ...interface{}) (map[string]inte
 	if len(args) > 0 {
 		h, ok := args[1].(map[string]interface{})
 		if !ok && h != nil {
-			return nil, errors.New("Headers should be a map")
+			return nil, errors.New("headers should be a map")
 		}
 		headers = h
 	}
@@ -753,12 +753,12 @@ func (c *HttpClient) Request(route string, args ...interface{}) (map[string]inte
 
 		myVal, ok := val.([]interface{})
 		if !ok || len(myVal) != 2 {
-			return nil, errors.New("Invalid response format")
+			return nil, errors.New("invalid response format")
 		}
 
 		errVal, ok := myVal[1].(map[string]interface{})
 		if !ok && errVal != nil {
-			return nil, errors.New("Invalid error format")
+			return nil, errors.New("invalid error format")
 		}
 		if errVal != nil {
 			errMsg, _ := errVal["message"].(string)
@@ -767,7 +767,7 @@ func (c *HttpClient) Request(route string, args ...interface{}) (map[string]inte
 
 		result, ok := myVal[0].(map[string]interface{})
 		if !ok && result != nil {
-			return nil, errors.New("Invalid result format")
+			return nil, errors.New("invalid result format")
 		}
 
 		return result, nil
@@ -951,7 +951,7 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 			case func(map[string]interface{}, *map[string]interface{}, error):
 				h(body.(map[string]interface{}), &safeContext, err)
 			default:
-				err = errors.New("Unsupported route handler function definition")
+				err = errors.New("unsupported route handler function definition")
 			}
 			if tempErr != nil {
 				err = tempErr
@@ -959,7 +959,7 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 				if result == nil {
 					result = tempResult
 				} else {
-					err = errors.New("Middleware should not return anything but may mutate context")
+					err = errors.New("middleware should not return anything but may mutate context")
 					break
 				}
 			}
@@ -999,45 +999,45 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 	return resultChan
 }
 
-func filterObject(obj map[string]interface{}, arr []interface{}) map[string]interface{} {
-	if arr == nil {
-		return obj
-	}
+// func filterObject(obj map[string]interface{}, arr []interface{}) map[string]interface{} {
+// 	if arr == nil {
+// 		return obj
+// 	}
 
-	filteredObj := make(map[string]interface{})
+// 	filteredObj := make(map[string]interface{})
 
-	for _, key := range arr {
-		switch k := key.(type) {
-		case string:
-			if value, ok := obj[k]; ok {
-				filteredObj[k] = value
-			}
-		case []interface{}:
-			if nestedObj, ok := obj[k[0].(string)]; ok {
-				switch nested := nestedObj.(type) {
-				case []interface{}:
-					filteredArr := make([]interface{}, 0)
-					for _, nestedItem := range nested {
-						filteredNestedObj := filterObject(nestedItem.(map[string]interface{}), k[1].([]interface{}))
-						if len(filteredNestedObj) > 0 {
-							filteredArr = append(filteredArr, filteredNestedObj)
-						}
-					}
-					if len(filteredArr) > 0 {
-						filteredObj[k[0].(string)] = filteredArr
-					}
-				case map[string]interface{}:
-					filteredNestedObj := filterObject(nested, k[1].([]interface{}))
-					if len(filteredNestedObj) > 0 {
-						filteredObj[k[0].(string)] = filteredNestedObj
-					}
-				}
-			}
-		}
-	}
+// 	for _, key := range arr {
+// 		switch k := key.(type) {
+// 		case string:
+// 			if value, ok := obj[k]; ok {
+// 				filteredObj[k] = value
+// 			}
+// 		case []interface{}:
+// 			if nestedObj, ok := obj[k[0].(string)]; ok {
+// 				switch nested := nestedObj.(type) {
+// 				case []interface{}:
+// 					filteredArr := make([]interface{}, 0)
+// 					for _, nestedItem := range nested {
+// 						filteredNestedObj := filterObject(nestedItem.(map[string]interface{}), k[1].([]interface{}))
+// 						if len(filteredNestedObj) > 0 {
+// 							filteredArr = append(filteredArr, filteredNestedObj)
+// 						}
+// 					}
+// 					if len(filteredArr) > 0 {
+// 						filteredObj[k[0].(string)] = filteredArr
+// 					}
+// 				case map[string]interface{}:
+// 					filteredNestedObj := filterObject(nested, k[1].([]interface{}))
+// 					if len(filteredNestedObj) > 0 {
+// 						filteredObj[k[0].(string)] = filteredNestedObj
+// 					}
+// 				}
+// 			}
+// 		}
+// 	}
 
-	return filteredObj
-}
+// 	return filteredObj
+// }
 
 func deepCopyMap(original map[string]interface{}) map[string]interface{} {
 	copy := make(map[string]interface{}, len(original))
