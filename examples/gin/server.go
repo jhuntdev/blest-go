@@ -12,24 +12,19 @@ import (
 )
 
 // Create some middleware (optional)
-func authMiddleware(params interface{}, context *map[string]interface{}) (interface{}, error) {
-	name, ok := params.(map[string]interface{})["name"].(string)
-	if !ok {
-		name = "Tarzan"
+func authMiddleware(body interface{}, context *map[string]interface{}) {
+	headers, ok := context.(map[string]interface{})["headers"].(map[string]interface{})
+	if !ok || headers["auth"] != "myToken" {
+		return nil, errors.New("Unauthorized")
 	}
 	(*context)["user"] = map[string]interface{}{
-		"name": name,
+		// user info for example
 	}
-	return nil, nil
 }
 
 // Create a route controller
-func greetController(params interface{}, context *map[string]interface{}) (interface{}, error) {
-	user, ok := (*context)["user"].(map[string]interface{})
-	if !ok {
-		return nil, errors.New("user not found or has an invalid type")
-	}
-	name, ok := user["name"].(string)
+func greetController(body interface{}, context *map[string]interface{}) (interface{}, error) {
+	name, ok := body["name"].(string)
 	if !ok {
 		return nil, errors.New("name not found or has an invalid type")
 	}
