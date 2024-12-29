@@ -24,19 +24,18 @@ go get github.com/jhuntdev/blest-go
 
 ## Usage
 
-The `Default` struct of this library has an interface similar to Gin. It also provides a `Router` struct with a `Handle` method for use in an existing NodeJS application and an `HttpClient` struct with a `Request` method for making BLEST HTTP requests.
+### Router
 
 ```go
 package main
 
-import "github.com/jhuntdev/blest-go"
+import {
+	"github.com/jhuntdev/blest-go"
+	"github.com/gin-gonic/gin"
+}
 
 // Create some middleware (optional)
-func authMiddleware(body interface{}, context *map[string]interface{}) {
-	headers, ok := context.(map[string]interface{})["headers"].(map[string]interface{})
-	if !ok || headers["auth"] != "myToken" {
-		return nil, errors.New("Unauthorized")
-	}
+func userMiddleware(body interface{}, context *map[string]interface{}) {
 	(*context)["user"] = map[string]interface{}{
 		// user info for example
 	}
@@ -54,54 +53,9 @@ func greetController(body interface{}, context *map[string]interface{}) (interfa
 	}, nil
 }
 
-func main() {
-	r := blest.Default()
-	r.Use(authMiddleware)
-	r.Route("greet", greetController)
-	r.Run() // listen and serve on 0.0.0.0:8080
-}
-```
-
-### Router
-
-```go
-package main
-
-import {
-	"github.com/jhuntdev/blest-go"
-	"github.com/gin-gonic/gin"
-}
-
-// Create some middleware (optional)
-func authMiddleware(body interface{}, context *map[string]interface{}) {
-	headers, ok := context.(map[string]interface{})["headers"].(map[string]interface{})
-	if !ok || headers["auth"] !== "myToken" {
-		return nil, errors.New("Unauthorized")
-	}
-	(*context)["user"] = map[string]interface{}{
-		"name": name,
-	}
-}
-
-// Create a route controller
-func greetController(body interface{}, context *map[string]interface{}) (interface{}, error) {
-	user, ok := (*context)["user"].(map[string]interface{})
-	if !ok {
-		return nil, errors.New("user not found or has an invalid type")
-	}
-	name, ok := user["name"].(string)
-	if !ok {
-		return nil, errors.New("name not found or has an invalid type")
-	}
-	greeting := fmt.Sprintf("Hi, %v!", name)
-	return map[string]interface{}{
-		"greeting": greeting,
-	}, nil
-}
-
 // Create your router
 router := blest.Router()
-router.Use(authMiddleware)
+router.Use(userMiddleware)
 router.Route("greet", greetController)
 
 func main() {
@@ -150,7 +104,7 @@ func main() {
 	client := blest.NewHttpClient("http://localhost:8080", map[string]interface{}{"httpHeaders": httpHeaders})
 	
 	// Send a request
-	result, err := client.Request("greet", map[string]interface{}{ "name": "Steve" }, map[string]interface{}{"auth": "myToken"})
+	result, err := client.Request("greet", map[string]interface{}{ "name": "Steve" })
 	if err != nil {
 		// Do something in case of error
 	} else {

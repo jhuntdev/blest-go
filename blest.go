@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"reflect"
@@ -604,7 +604,7 @@ func httpPostRequest(url string, data interface{}, headers map[string]string) []
 	}
 	defer response.Body.Close()
 
-	body, err := ioutil.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		fmt.Printf("Failed to read response body: %s", err)
 		return nil
@@ -884,7 +884,7 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 
 		var timer *time.Timer
 		var timedOut bool
-		id, route, body := request.ID, request.Route, request.Body
+		id, route, body, headers := request.ID, request.Route, request.Body, request.Headers.(map[string]interface{})
 
 		if timeout > 0 {
 			timer = time.AfterFunc(time.Duration(timeout)*time.Millisecond, func() {
@@ -985,8 +985,9 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 			switch result.(type) { // r :=
 			case map[string]interface{}:
 				// if selector != nil {
-				// 	result = filterObject(r, selector)
-				// }
+				if selector, ok := headers["_s"].([]interface{}); ok {
+					result = filterObject(result.(map[string]interface{}), selector)
+				}
 			default:
 				resultChan <- [4]interface{}{id, route, nil, map[string]interface{}{"message": "The result, if any, should be a JSON object", "statusCode": 500}}
 			}
@@ -999,45 +1000,45 @@ func routeReducer(handler []interface{}, request requestObject, context map[stri
 	return resultChan
 }
 
-// func filterObject(obj map[string]interface{}, arr []interface{}) map[string]interface{} {
-// 	if arr == nil {
-// 		return obj
-// 	}
+func filterObject(obj map[string]interface{}, arr []interface{}) map[string]interface{} {
+	if arr == nil {
+		return obj
+	}
 
-// 	filteredObj := make(map[string]interface{})
+	filteredObj := make(map[string]interface{})
 
-// 	for _, key := range arr {
-// 		switch k := key.(type) {
-// 		case string:
-// 			if value, ok := obj[k]; ok {
-// 				filteredObj[k] = value
-// 			}
-// 		case []interface{}:
-// 			if nestedObj, ok := obj[k[0].(string)]; ok {
-// 				switch nested := nestedObj.(type) {
-// 				case []interface{}:
-// 					filteredArr := make([]interface{}, 0)
-// 					for _, nestedItem := range nested {
-// 						filteredNestedObj := filterObject(nestedItem.(map[string]interface{}), k[1].([]interface{}))
-// 						if len(filteredNestedObj) > 0 {
-// 							filteredArr = append(filteredArr, filteredNestedObj)
-// 						}
-// 					}
-// 					if len(filteredArr) > 0 {
-// 						filteredObj[k[0].(string)] = filteredArr
-// 					}
-// 				case map[string]interface{}:
-// 					filteredNestedObj := filterObject(nested, k[1].([]interface{}))
-// 					if len(filteredNestedObj) > 0 {
-// 						filteredObj[k[0].(string)] = filteredNestedObj
-// 					}
-// 				}
-// 			}
-// 		}
-// 	}
+	for _, key := range arr {
+		switch k := key.(type) {
+		case string:
+			if value, ok := obj[k]; ok {
+				filteredObj[k] = value
+			}
+		case []interface{}:
+			if nestedObj, ok := obj[k[0].(string)]; ok {
+				switch nested := nestedObj.(type) {
+				case []interface{}:
+					filteredArr := make([]interface{}, 0)
+					for _, nestedItem := range nested {
+						filteredNestedObj := filterObject(nestedItem.(map[string]interface{}), k[1].([]interface{}))
+						if len(filteredNestedObj) > 0 {
+							filteredArr = append(filteredArr, filteredNestedObj)
+						}
+					}
+					if len(filteredArr) > 0 {
+						filteredObj[k[0].(string)] = filteredArr
+					}
+				case map[string]interface{}:
+					filteredNestedObj := filterObject(nested, k[1].([]interface{}))
+					if len(filteredNestedObj) > 0 {
+						filteredObj[k[0].(string)] = filteredNestedObj
+					}
+				}
+			}
+		}
+	}
 
-// 	return filteredObj
-// }
+	return filteredObj
+}
 
 func deepCopyMap(original map[string]interface{}) map[string]interface{} {
 	copy := make(map[string]interface{}, len(original))
