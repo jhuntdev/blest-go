@@ -12,11 +12,7 @@ import (
 )
 
 // Create some middleware (optional)
-func authMiddleware(body interface{}, context *map[string]interface{}) {
-	headers, ok := context.(map[string]interface{})["headers"].(map[string]interface{})
-	if !ok || headers["auth"] != "myToken" {
-		return nil, errors.New("Unauthorized")
-	}
+func userMiddleware(body interface{}, context *map[string]interface{}) {
 	(*context)["user"] = map[string]interface{}{
 		// user info for example
 	}
@@ -38,7 +34,7 @@ func main() {
 	// Set up a router
 	router := map[string]interface{}{
 		"greet": []func(interface{}, *map[string]interface{}) (interface{}, error){
-			authMiddleware,
+			userMiddleware,
 			greetController,
 		},
 	}
